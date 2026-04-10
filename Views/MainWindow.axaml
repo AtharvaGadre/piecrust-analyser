@@ -1,0 +1,304 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:PiecrustAnalyser.CSharp.ViewModels"
+        xmlns:models="using:PiecrustAnalyser.CSharp.Models"
+        xmlns:controls="using:PiecrustAnalyser.CSharp.Controls"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        mc:Ignorable="d"
+        x:Class="PiecrustAnalyser.CSharp.Views.MainWindow"
+        x:DataType="vm:MainWindowViewModel"
+        Title="Pie Crust Analyser"
+        Width="1480"
+        Height="940"
+        MinWidth="1200"
+        MinHeight="760"
+        Background="#100c08"
+        Foreground="#ead9bf">
+    <Window.Styles>
+        <Style Selector="Button">
+            <Setter Property="Background" Value="#2a1a08"/>
+            <Setter Property="Foreground" Value="#d4a056"/>
+            <Setter Property="BorderBrush" Value="#6b4226"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="10,6"/>
+        </Style>
+        <Style Selector="Button:pointerover">
+            <Setter Property="Background" Value="#372212"/>
+        </Style>
+        <Style Selector="TextBox">
+            <Setter Property="Background" Value="#1a1008"/>
+            <Setter Property="Foreground" Value="#d4a056"/>
+            <Setter Property="BorderBrush" Value="#3a2a16"/>
+            <Setter Property="BorderThickness" Value="1"/>
+        </Style>
+        <Style Selector="ComboBox">
+            <Setter Property="Background" Value="#1a1008"/>
+            <Setter Property="Foreground" Value="#d4a056"/>
+        </Style>
+        <Style Selector="ListBox">
+            <Setter Property="Background" Value="#120d08"/>
+            <Setter Property="Foreground" Value="#ead9bf"/>
+        </Style>
+        <Style Selector="TabItem">
+            <Setter Property="Background" Value="#1b130b"/>
+            <Setter Property="Foreground" Value="#d4a056"/>
+        </Style>
+        <Style Selector="TabItem:selected">
+            <Setter Property="Background" Value="#2a1a08"/>
+            <Setter Property="Foreground" Value="#f0d39a"/>
+        </Style>
+    </Window.Styles>
+
+    <Grid RowDefinitions="Auto,*" Margin="10">
+        <Border Grid.Row="0" Background="#161008" BorderBrush="#352615" BorderThickness="1" CornerRadius="8" Padding="10" Margin="0,0,0,10">
+            <StackPanel Spacing="8">
+                <WrapPanel>
+                    <Button Content="Load Files / Browse" Click="OnLoadFilesClick" Margin="0,0,8,0"/>
+                    <Button Content="Auto Number Sequence" Click="OnAutoNumberFilesClick" Margin="0,0,8,0"/>
+                    <Button Content="Remove Selected Image" Click="OnRemoveSelectedClick" Margin="0,0,8,0"/>
+                    <Button Content="Mark Profile Line" Click="OnMarkProfileLineClick" Margin="0,0,8,0"/>
+                    <Button Content="Clear Profile Line" Click="OnClearProfileLineClick" Margin="0,0,8,0"/>
+                    <Button Content="Start Centre Line" Click="OnStartGuideClick" Margin="0,0,8,0"/>
+                    <Button Content="Finish Centre Line" Click="OnFinishGuideClick" Margin="0,0,8,0"/>
+                    <Button Content="Undo Last Point" Click="OnUndoGuidePointClick" Margin="0,0,8,0"/>
+                    <Button Content="Clear Centre Line" Click="OnClearGuideClick" Margin="0,0,8,0"/>
+                    <Button Content="Run Guided Extraction" Click="OnRunGuidedExtractionClick" Margin="0,0,8,0"/>
+                    <Button Content="Export Guided CSV" Click="OnExportCsvClick"/>
+                </WrapPanel>
+
+                <Grid ColumnDefinitions="220,180,160,160,*" ColumnSpacing="10">
+                    <StackPanel Grid.Column="0" Spacing="2">
+                        <TextBlock Text="Files" FontWeight="SemiBold" Foreground="#d8b07a"/>
+                        <ListBox ItemsSource="{Binding Files}" SelectedItem="{Binding SelectedFile, Mode=TwoWay}" Height="110" Background="#120d08" BorderBrush="#352615">
+                            <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                    <StackPanel Orientation="Horizontal" Spacing="8">
+                                        <TextBlock Text="{Binding Name}"/>
+                                        <TextBlock Text="{Binding SequenceOrder, StringFormat=\#{0}}" Foreground="#f0c978"/>
+                                        <TextBlock Text="{Binding Stage}" Foreground="#a7c47d"/>
+                                    </StackPanel>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+                    </StackPanel>
+
+                    <StackPanel Grid.Column="1" Spacing="2">
+                        <TextBlock Text="Corridor Width (nm)" Foreground="#d8b07a"/>
+                        <TextBox Text="{Binding SelectedFile.GuideCorridorWidthNm, Mode=TwoWay}" LostFocus="OnSelectionFieldChanged"/>
+                        <TextBlock Text="Dose (ug/mL)" Foreground="#d8b07a" Margin="0,8,0,0"/>
+                        <TextBox Text="{Binding SelectedFile.AntibioticDoseUgPerMl, Mode=TwoWay}" LostFocus="OnSelectionFieldChanged"/>
+                    </StackPanel>
+
+                    <StackPanel Grid.Column="2" Spacing="2">
+                        <TextBlock Text="Condition" Foreground="#d8b07a"/>
+                        <ComboBox ItemsSource="{Binding ConditionOptions}" SelectedItem="{Binding SelectedFile.ConditionType, Mode=TwoWay}" SelectionChanged="OnSelectionFieldChanged"/>
+                        <TextBlock Text="Stage" Foreground="#d8b07a" Margin="0,8,0,0"/>
+                        <ComboBox ItemsSource="{Binding StageOptions}" SelectedItem="{Binding SelectedFile.Stage, Mode=TwoWay}" SelectionChanged="OnSelectionFieldChanged"/>
+                        <TextBlock Text="{Binding SelectedStageHintText}" TextWrapping="Wrap" Foreground="#bca37d" FontSize="11" Margin="0,4,0,0"/>
+                    </StackPanel>
+
+                    <StackPanel Grid.Column="3" Spacing="2">
+                        <TextBlock Text="Sequence #" Foreground="#d8b07a"/>
+                        <TextBox Text="{Binding SelectedFile.SequenceOrder, Mode=TwoWay}" LostFocus="OnSelectionFieldChanged"/>
+                        <TextBlock Text="Format" Foreground="#d8b07a"/>
+                        <TextBlock Text="{Binding SelectedFile.Format}"/>
+                        <TextBlock Text="Scan Size (nm)" Foreground="#d8b07a" Margin="0,8,0,0"/>
+                        <TextBlock Text="{Binding SelectedFile.ScanSizeNm, StringFormat={}{0:F2}}"/>
+                    </StackPanel>
+
+                    <Border Grid.Column="4" Background="#120d08" BorderBrush="#352615" BorderThickness="1" CornerRadius="6" Padding="8">
+                        <TextBlock Text="{Binding StatusText}" TextWrapping="Wrap"/>
+                    </Border>
+                </Grid>
+            </StackPanel>
+        </Border>
+
+        <TabControl Grid.Row="1" SelectedIndex="{Binding SelectedTabIndex}">
+            <TabItem Header="Image + Profile">
+                <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="10" Spacing="8" MinWidth="1040">
+                        <Grid ColumnDefinitions="2.2*,1*" ColumnSpacing="10">
+                            <Border Background="#161008" BorderBrush="#352615" BorderThickness="1" CornerRadius="8" Padding="8">
+                                <controls:HeightMapCanvasControl x:Name="HeightMapCanvas"
+                                                                 Bitmap="{Binding SelectedFile.PreviewBitmap}"
+                                                                 ProfileLine="{Binding SelectedFile.ProfileLine}"
+                                                                 GuidePoints="{Binding SelectedFile.GuidePoints}"
+                                                                 GuideFinished="{Binding SelectedFile.GuideLineFinished}"
+                                                                 CorridorHalfWidthPixels="{Binding CurrentCorridorHalfWidthPixels}"/>
+                            </Border>
+
+                            <Border Grid.Column="1" Background="#161008" BorderBrush="#352615" BorderThickness="1" CornerRadius="8" Padding="8">
+                                <ScrollViewer>
+                                    <StackPanel Spacing="8">
+                                        <TextBlock Text="Current File" FontSize="16" FontWeight="Bold" Foreground="#d8b07a"/>
+                                        <TextBlock Text="{Binding SelectedFileNameText}" FontWeight="SemiBold"/>
+                                        <TextBlock Text="{Binding SelectedDisplayMinText}"/>
+                                        <TextBlock Text="{Binding SelectedDisplayMaxText}"/>
+                                        <TextBlock Text="{Binding SelectedMeanHeightText}"/>
+                                        <TextBlock Text="{Binding SelectedMeanWidthText}"/>
+                                        <TextBlock Text="{Binding SelectedContinuityText}"/>
+                                        <TextBlock Text="{Binding SelectedPeakSeparationText}"/>
+                                        <Separator/>
+                                        <TextBlock Text="Growth Quantification" FontWeight="Bold" Foreground="#d8b07a"/>
+                                        <TextBlock Text="{Binding CurrentAdditionRateText}"/>
+                                        <TextBlock Text="{Binding CurrentRemovalRateText}"/>
+                                        <TextBlock Text="{Binding CurrentCompromiseText}"/>
+                                    </StackPanel>
+                                </ScrollViewer>
+                            </Border>
+                        </Grid>
+                        <TextBlock Text="Straight line profiles stay on calibrated absolute height values, while the centre-line workflow is used for guided morphology extraction." TextWrapping="Wrap" Foreground="#bca37d"/>
+                        <StackPanel Orientation="Horizontal" Spacing="10">
+                            <TextBlock Text="Line Profile" FontWeight="Bold" Foreground="#d8b07a" VerticalAlignment="Center"/>
+                            <Button Content="Download Line Profile CSV" Click="OnExportLineProfileCsvClick"/>
+                        </StackPanel>
+                        <Border Background="#161008" BorderBrush="#352615" BorderThickness="1" CornerRadius="8" MinWidth="980" Height="340">
+                            <controls:LinePlotControl Series="{Binding CurrentProfileSeries}"
+                                                      Title="Line Profile"
+                                                      XAxisLabel="{Binding CurrentProfileXAxisLabel}"
+                                                      YAxisLabel="{Binding CurrentProfileYAxisLabel}"
+                                                      LightTheme="True"/>
+                        </Border>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <TabItem Header="Box Plots">
+                <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="10" Spacing="8" MinWidth="1040">
+                        <StackPanel Orientation="Horizontal" Spacing="10">
+                            <TextBlock Text="Stage Box Plots" FontWeight="Bold" Foreground="#d8b07a" VerticalAlignment="Center"/>
+                            <Button Content="Download Box Plot CSV" Click="OnExportBoxPlotsCsvClick"/>
+                        </StackPanel>
+                        <TextBlock Text="Per-stage summary from image-level replicates" FontWeight="Bold" Foreground="#d8b07a"/>
+                        <ItemsControl ItemsSource="{Binding StageSummaries}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate x:DataType="models:StageSummaryRow">
+                                    <Border Background="#161008" BorderBrush="#352615" BorderThickness="1" CornerRadius="8" Padding="10" Margin="0,0,0,6">
+                                        <Grid ColumnDefinitions="*,*,*,*,*,*" ColumnSpacing="12">
+                                            <TextBlock Text="{Binding Stage}" FontWeight="SemiBold" Foreground="#f0c978"/>
+                                            <TextBlock Grid.Column="1" Text="{Binding ImageCount, StringFormat=Images {0}}"/>
+                                            <TextBlock Grid.Column="2" Text="{Binding HeightMeanNm, StringFormat=Height {0:F2} nm}"/>
+                                            <TextBlock Grid.Column="3" Text="{Binding HeightStdNm, StringFormat=Height SD {0:F2} nm}"/>
+                                            <TextBlock Grid.Column="4" Text="{Binding WidthMeanNm, StringFormat=Width {0:F2} nm}"/>
+                                            <TextBlock Grid.Column="5" Text="{Binding WidthStdNm, StringFormat=Width SD {0:F2} nm}"/>
+                                        </Grid>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                        <TextBlock Text="Height Box Plots by Stage (nm)" FontWeight="Bold" Foreground="#d8b07a"/>
+                        <Border Background="#161008" BorderBrush="#352615" BorderThickness="1" CornerRadius="8" MinWidth="980" Height="280">
+                            <controls:BoxPlotControl Datasets="{Binding HeightBoxPlots}"/>
+                        </Border>
+                        <TextBlock Text="Width Box Plots by Stage (nm)" FontWeight="Bold" Foreground="#d8b07a"/>
+                        <Border Background="#161008" BorderBrush="#352615" BorderThickness="1" CornerRadius="8" MinWidth="980" Height="280">
+                            <controls:BoxPlotControl Datasets="{Binding WidthBoxPlots}"/>
+                        </Border>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <TabItem Header="Growth Model">
+                <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="10" Spacing="8" MinWidth="1040">
+                        <TextBlock Text="Number imported TIFF/SPM references in sequence, choose a start and end file, and the model will use all numbered references in between to fit a polynomial surface evolution that fills the missing growth states." TextWrapping="Wrap" Foreground="#bca37d"/>
+                        <StackPanel Orientation="Horizontal" Spacing="10">
+                            <TextBlock Text="Start Reference" VerticalAlignment="Center"/>
+                            <ComboBox ItemsSource="{Binding Files}" SelectedItem="{Binding SimulationStartFile, Mode=TwoWay}" Width="220">
+                                <ComboBox.ItemTemplate>
+                                    <DataTemplate x:DataType="models:PiecrustFileState">
+                                        <StackPanel Orientation="Horizontal" Spacing="6">
+                                            <TextBlock Text="{Binding SequenceOrder, StringFormat=\#{0}}" Foreground="#f0c978"/>
+                                            <TextBlock Text="{Binding Stage}"/>
+                                        </StackPanel>
+                                    </DataTemplate>
+                                </ComboBox.ItemTemplate>
+                            </ComboBox>
+                            <TextBlock Text="End Reference" VerticalAlignment="Center"/>
+                            <ComboBox ItemsSource="{Binding Files}" SelectedItem="{Binding SimulationEndFile, Mode=TwoWay}" Width="220">
+                                <ComboBox.ItemTemplate>
+                                    <DataTemplate x:DataType="models:PiecrustFileState">
+                                        <StackPanel Orientation="Horizontal" Spacing="6">
+                                            <TextBlock Text="{Binding SequenceOrder, StringFormat=\#{0}}" Foreground="#f0c978"/>
+                                            <TextBlock Text="{Binding Stage}"/>
+                                        </StackPanel>
+                                    </DataTemplate>
+                                </ComboBox.ItemTemplate>
+                            </ComboBox>
+                            <Button Content="Run Polynomial Evolution" Click="OnRunPolynomialEvolutionClick"/>
+                            <Button Content="Play / Pause Simulation" Click="OnToggleSimulationClick"/>
+                            <Button Content="Reset Simulation" Click="OnResetSimulationClick"/>
+                            <Button Content="Download Growth Model CSV" Click="OnExportGrowthModelCsvClick"/>
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal" Spacing="10">
+                            <TextBlock Text="Simulation Progress" VerticalAlignment="Center"/>
+                            <Slider Minimum="0" Maximum="1" Value="{Binding SimulationProgress, Mode=TwoWay}" Width="260"/>
+                            <TextBlock Text="{Binding SimulationProgress, StringFormat={}{0:P0}}" VerticalAlignment="Center"/>
+                        </StackPanel>
+                        <TextBlock Text="{Binding SimulationStatusText}" TextWrapping="Wrap" Foreground="#bca37d"/>
+                        <TextBlock Text="{Binding SimulationReferenceSummaryText}" TextWrapping="Wrap" Foreground="#d8c29a"/>
+                        <Grid ColumnDefinitions="34,*" RowDefinitions="*,Auto" MinWidth="980">
+                            <TextBlock Grid.Row="0"
+                                       Grid.Column="0"
+                                       Text="{Binding SimulationSurfaceYAxisLabel}"
+                                       Foreground="#9f8866"
+                                       HorizontalAlignment="Center"
+                                       VerticalAlignment="Center"
+                                       RenderTransformOrigin="0.5,0.5">
+                                <TextBlock.RenderTransform>
+                                    <RotateTransform Angle="-90"/>
+                                </TextBlock.RenderTransform>
+                            </TextBlock>
+                            <Border Grid.Row="0" Grid.Column="1" Background="#161008" BorderBrush="#352615" BorderThickness="1" CornerRadius="8" Height="360">
+                                <controls:HeightMapCanvasControl Bitmap="{Binding SimulationSurfaceBitmap}"/>
+                            </Border>
+                            <TextBlock Grid.Row="1"
+                                       Grid.Column="1"
+                                       Text="{Binding SimulationSurfaceXAxisLabel}"
+                                       Foreground="#9f8866"
+                                       HorizontalAlignment="Center"
+                                       Margin="0,6,0,0"/>
+                        </Grid>
+                        <TextBlock Text="{Binding SimulationSurfaceMetaText}" TextWrapping="Wrap" Foreground="#bca37d"/>
+                        <Border Background="#161008" BorderBrush="#352615" BorderThickness="1" CornerRadius="8" MinWidth="980" Height="380">
+                            <controls:LinePlotControl Series="{Binding SimulationSeries}"
+                                                      Title="Polynomial Surface Evolution Cross-section"
+                                                      XAxisLabel="{Binding SimulationXAxisLabel}"
+                                                      YAxisLabel="{Binding SimulationYAxisLabel}"
+                                                      FixedYMin="{Binding SimulationPlotFixedYMin}"
+                                                      FixedYMax="{Binding SimulationPlotFixedYMax}"/>
+                        </Border>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <TabItem Header="Growth Quant">
+                <Grid Margin="10" RowDefinitions="Auto,*" RowSpacing="8">
+                    <StackPanel Orientation="Horizontal" Spacing="10">
+                        <TextBlock Text="{Binding CompromiseMethodText}" TextWrapping="Wrap" Foreground="#bca37d" MaxWidth="760"/>
+                        <Button Content="Download Growth Quant CSV" Click="OnExportGrowthQuantCsvClick"/>
+                    </StackPanel>
+                    <ScrollViewer Grid.Row="1">
+                        <ItemsControl ItemsSource="{Binding GrowthRows}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Border Background="#161008" BorderBrush="#352615" BorderThickness="1" CornerRadius="8" Padding="10" Margin="0,0,0,8">
+                                        <Grid ColumnDefinitions="2*,*,*,*,*" ColumnSpacing="12">
+                                            <TextBlock Text="{Binding FileName}" FontWeight="SemiBold"/>
+                                            <TextBlock Grid.Column="1" Text="{Binding DoseUgPerMl, StringFormat={}{0:F2} ug/mL}"/>
+                                            <TextBlock Grid.Column="2" Text="{Binding MeanHeightNm, StringFormat=Height {0:F2} nm}"/>
+                                            <TextBlock Grid.Column="3" Text="{Binding MeanWidthNm, StringFormat=Width {0:F2} nm}"/>
+                                            <TextBlock Grid.Column="4" Text="{Binding CompromiseDisplayText}"/>
+                                        </Grid>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </ScrollViewer>
+                </Grid>
+            </TabItem>
+        </TabControl>
+    </Grid>
+</Window>

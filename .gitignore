@@ -1,0 +1,8 @@
+bin/
+obj/
+publish/
+.DS_Store
+*.user
+*.suo
+*.swp
+*.log
