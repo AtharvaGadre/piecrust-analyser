@@ -83,8 +83,11 @@ jobs:
             <string>12.0</string>
           </dict>
           </plist>
-          cd publish/${{ matrix.artifact_name }}
-          zip -r "../${{ matrix.artifact_name }}.zip" "Pie Crust Analyser.app"
+          # Ad-hoc sign the bundle so the app structure is internally consistent.
+          # Full notarization still requires Apple Developer credentials.
+          codesign --force --deep --sign - "$APP_ROOT"
+          rm -f "publish/${{ matrix.artifact_name }}.zip"
+          ditto -c -k --sequesterRsrc --keepParent "$APP_ROOT" "publish/${{ matrix.artifact_name }}.zip"
 
       - name: Package Windows bundle
         if: runner.os == 'Windows'

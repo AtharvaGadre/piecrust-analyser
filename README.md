@@ -63,6 +63,13 @@ It produces:
 - self-contained Windows and Linux desktop bundles
 - downloadable ZIP files on GitHub Releases for tags such as `v1.0.0`
 
+## macOS note
+
+The macOS release is distributed as a `.zip` containing `Pie Crust Analyser.app`.
+If macOS reports that the app is damaged or cannot be opened, that is usually a
+Gatekeeper/notarization issue rather than a corrupted download. A fully seamless
+first-run experience on macOS requires Apple Developer signing and notarization.
+
 For non-coders, the simplest flow is:
 
 1. open the repository `Releases` page
