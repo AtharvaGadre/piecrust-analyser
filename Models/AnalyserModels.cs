@@ -6,7 +6,7 @@ namespace PiecrustAnalyser.CSharp.Models;
 
 public readonly record struct PointD(double X, double Y);
 public readonly record struct PlotPoint(double X, double Y);
-public readonly record struct PolylineSeries(IReadOnlyList<PlotPoint> Points, string Color, double Thickness = 1.5, double Opacity = 1.0, bool Dashed = false);
+public readonly record struct PolylineSeries(IReadOnlyList<PlotPoint> Points, string Color, double Thickness = 1.5, double Opacity = 1.0, bool Dashed = false, bool Dotted = false);
 
 public sealed class DistributionSummary
 {
@@ -41,6 +41,8 @@ public sealed class StageSummaryRow
     public double HeightStdNm { get; init; }
     public double WidthMeanNm { get; init; }
     public double WidthStdNm { get; init; }
+    public double HeightWidthRatioMean { get; init; }
+    public double HeightWidthRatioStd { get; init; }
 }
 
 public sealed class GuidedMetric
@@ -68,6 +70,7 @@ public sealed class GuidedSummary
     public double PeakSeparationNm { get; init; }
     public double DipDepthNm { get; init; }
     public double BimodalWeight { get; init; }
+    public double HeightToWidthRatio { get; init; }
     public DistributionSummary? WidthSummary { get; init; }
     public DistributionSummary? HeightSummary { get; init; }
 }
@@ -89,6 +92,7 @@ public sealed class GrowthQuantificationRow
     public double MeanWidthNm { get; init; }
     public double HeightSemNm { get; init; }
     public double WidthSemNm { get; init; }
+    public double HeightToWidthRatio { get; init; }
 }
 
 public sealed class SimulationReferenceInfo
@@ -114,6 +118,9 @@ public sealed class SurfaceSimulationResult
     public double DisplayMin { get; init; }
     public double DisplayMax { get; init; }
     public bool UsesGuidedAlignment { get; init; }
+    public bool UsesSupervisedLearning { get; init; }
+    public int SupervisedExampleCount { get; init; }
+    public double SupervisedBlendWeight { get; init; }
 }
 
 public sealed class EvolutionRecord
@@ -144,6 +151,17 @@ public sealed class LoadedHeightMap
     public double ScanSizeNm { get; init; }
     public double NmPerPixel { get; init; }
     public double[] Data { get; init; } = Array.Empty<double>();
+    public double[] RawData { get; init; } = Array.Empty<double>();
+    public double[] DisplayData { get; init; } = Array.Empty<double>();
+    public double DisplayRangeFullMin { get; init; }
+    public double DisplayRangeFullMax { get; init; } = 1;
+    public double DisplayRangeAutoMin { get; init; }
+    public double DisplayRangeAutoMax { get; init; } = 1;
+    public double DisplayRangeSuggestedMin { get; init; }
+    public double DisplayRangeSuggestedMax { get; init; } = 1;
+    public string DefaultDisplayRangeMode { get; init; } = "auto";
+    public double DisplayReferenceNm { get; init; }
+    public double EstimatedNoiseSigma { get; init; }
     public bool PreferScientificPreview { get; init; }
 }
 
@@ -152,6 +170,7 @@ public sealed partial class PiecrustFileState : ObservableObject
     [ObservableProperty] private string name = string.Empty;
     [ObservableProperty] private string filePath = string.Empty;
     [ObservableProperty] private string format = string.Empty;
+    [ObservableProperty] private string channelDisplay = string.Empty;
     [ObservableProperty] private string stage = "early";
     [ObservableProperty] private string conditionType = "unassigned";
     [ObservableProperty] private string unit = "nm";
@@ -159,8 +178,19 @@ public sealed partial class PiecrustFileState : ObservableObject
     [ObservableProperty] private int pixelHeight;
     [ObservableProperty] private double scanSizeNm = 500;
     [ObservableProperty] private double nmPerPixel = 1;
+    [ObservableProperty] private string displayRangeMode = "auto";
+    [ObservableProperty] private double displayRangeFullMin;
+    [ObservableProperty] private double displayRangeFullMax = 1;
+    [ObservableProperty] private double displayRangeAutoMin;
+    [ObservableProperty] private double displayRangeAutoMax = 1;
+    [ObservableProperty] private double displayRangeSuggestedMin;
+    [ObservableProperty] private double displayRangeSuggestedMax = 1;
+    [ObservableProperty] private double fixedDisplayMin;
+    [ObservableProperty] private double fixedDisplayMax = 1;
     [ObservableProperty] private double displayMin;
     [ObservableProperty] private double displayMax = 1;
+    [ObservableProperty] private double displayReferenceNm;
+    [ObservableProperty] private double estimatedNoiseSigma;
     [ObservableProperty] private int sequenceOrder = 1;
     [ObservableProperty] private double guideCorridorWidthNm = 20;
     [ObservableProperty] private double antibioticDoseUgPerMl;
@@ -170,6 +200,8 @@ public sealed partial class PiecrustFileState : ObservableObject
     [ObservableProperty] private GuidedSummary? guidedSummary;
 
     public double[] HeightData { get; init; } = Array.Empty<double>();
+    public double[] RawHeightData { get; init; } = Array.Empty<double>();
+    public double[] DisplayHeightData { get; init; } = Array.Empty<double>();
     public ObservableCollection<PointD> ProfileLine { get; } = new();
     public ObservableCollection<PointD> GuidePoints { get; } = new();
     public ObservableCollection<PlotPoint> ProfileSeries { get; } = new();

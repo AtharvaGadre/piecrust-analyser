@@ -162,4 +162,108 @@ public static class StatisticsAndGeometry
         }
         return output;
     }
+
+    public static double[] SavitzkyGolaySmooth(IReadOnlyList<double> values, int windowSize = 11, int polyOrder = 3)
+    {
+        if (values.Count == 0) return Array.Empty<double>();
+        if (windowSize < 3 || values.Count < windowSize) return values.ToArray();
+        if (windowSize % 2 == 0) windowSize++;
+        polyOrder = Math.Clamp(polyOrder, 1, windowSize - 2);
+
+        var halfWindow = windowSize / 2;
+        var orderCount = polyOrder + 1;
+        var vandermonde = new double[windowSize, orderCount];
+        for (var row = 0; row < windowSize; row++)
+        {
+            var x = row - halfWindow;
+            var pow = 1.0;
+            for (var col = 0; col < orderCount; col++)
+            {
+                vandermonde[row, col] = pow;
+                pow *= x;
+            }
+        }
+
+        var vtV = new double[orderCount, orderCount];
+        for (var i = 0; i < orderCount; i++)
+        {
+            for (var j = 0; j < orderCount; j++)
+            {
+                double sum = 0;
+                for (var k = 0; k < windowSize; k++) sum += vandermonde[k, i] * vandermonde[k, j];
+                vtV[i, j] = sum;
+            }
+        }
+
+        var inverse = InvertMatrix(vtV);
+        var coeffs = new double[windowSize];
+        for (var sample = 0; sample < windowSize; sample++)
+        {
+            double sum = 0;
+            for (var j = 0; j < orderCount; j++) sum += inverse[0, j] * vandermonde[sample, j];
+            coeffs[sample] = sum;
+        }
+
+        var output = new double[values.Count];
+        for (var i = 0; i < values.Count; i++)
+        {
+            double sum = 0;
+            for (var k = -halfWindow; k <= halfWindow; k++)
+            {
+                var idx = Math.Clamp(i + k, 0, values.Count - 1);
+                sum += coeffs[k + halfWindow] * values[idx];
+            }
+            output[i] = sum;
+        }
+        return output;
+    }
+
+    private static double[,] InvertMatrix(double[,] matrix)
+    {
+        var rows = matrix.GetLength(0);
+        var cols = matrix.GetLength(1);
+        if (rows != cols) throw new ArgumentException("Matrix must be square.", nameof(matrix));
+
+        var augmented = new double[rows, cols * 2];
+        for (var r = 0; r < rows; r++)
+        {
+            for (var c = 0; c < cols; c++) augmented[r, c] = matrix[r, c];
+            augmented[r, cols + r] = 1;
+        }
+
+        for (var col = 0; col < cols; col++)
+        {
+            var pivot = col;
+            for (var r = col + 1; r < rows; r++)
+            {
+                if (Math.Abs(augmented[r, col]) > Math.Abs(augmented[pivot, col])) pivot = r;
+            }
+
+            if (pivot != col)
+            {
+                for (var c = 0; c < cols * 2; c++)
+                {
+                    (augmented[col, c], augmented[pivot, c]) = (augmented[pivot, c], augmented[col, c]);
+                }
+            }
+
+            var divisor = Math.Abs(augmented[col, col]) < 1e-15 ? 1e-15 : augmented[col, col];
+            for (var c = 0; c < cols * 2; c++) augmented[col, c] /= divisor;
+
+            for (var r = 0; r < rows; r++)
+            {
+                if (r == col) continue;
+                var factor = augmented[r, col];
+                if (Math.Abs(factor) < 1e-15) continue;
+                for (var c = 0; c < cols * 2; c++) augmented[r, c] -= factor * augmented[col, c];
+            }
+        }
+
+        var inverse = new double[rows, cols];
+        for (var r = 0; r < rows; r++)
+        {
+            for (var c = 0; c < cols; c++) inverse[r, c] = augmented[r, cols + c];
+        }
+        return inverse;
+    }
 }

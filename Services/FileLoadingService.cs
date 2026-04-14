@@ -9,6 +9,8 @@ namespace PiecrustAnalyser.CSharp.Services;
 
 public sealed class FileLoadingService
 {
+    private readonly HeightMapDisplayService _displayService = new();
+
     public async Task<LoadedHeightMap?> LoadAsync(string path, double fallbackScanSizeNm)
     {
         var bytes = await File.ReadAllBytesAsync(path).ConfigureAwait(false);
@@ -19,16 +21,17 @@ public sealed class FileLoadingService
         if (isSpm || peek.Contains("\\*File list") || peek.Contains("Nanoscope") || peek.Contains("\\*Ciao"))
         {
             var bruker = ParseBruker(bytes, path);
-            if (bruker is not null) return bruker;
+            if (bruker is not null) return _displayService.Prepare(bruker);
         }
 
         if (isSpm)
         {
             var raw = ParseRaw(bytes, path, fallbackScanSizeNm);
-            if (raw is not null) return raw;
+            if (raw is not null) return _displayService.Prepare(raw);
         }
 
-        return await ParseBitmapAsync(bytes, path, fallbackScanSizeNm).ConfigureAwait(false);
+        var bitmap = await ParseBitmapAsync(bytes, path, fallbackScanSizeNm).ConfigureAwait(false);
+        return bitmap is null ? null : _displayService.Prepare(bitmap);
     }
 
     private static async Task<LoadedHeightMap?> ParseBitmapAsync(byte[] bytes, string path, double scanSizeNm)
@@ -40,19 +43,24 @@ public sealed class FileLoadingService
         }
 
         if (decoded is null) return null;
+        var calibration = TryResolveSiblingRawCalibration(path, decoded.Value.Width, decoded.Value.Height);
+        var calibratedScanSizeNm = calibration?.ScanSizeNm ?? scanSizeNm;
+        var formatLabel = calibration is null
+            ? decoded.Value.FormatLabel
+            : $"{decoded.Value.FormatLabel} (calibrated)";
 
         return new LoadedHeightMap
         {
             Name = Path.GetFileName(path),
             FilePath = path,
-            Format = decoded.Value.FormatLabel,
+            Format = formatLabel,
             Width = decoded.Value.Width,
             Height = decoded.Value.Height,
-            ScanSizeNm = scanSizeNm,
-            NmPerPixel = scanSizeNm / Math.Max(1, decoded.Value.Width),
+            ScanSizeNm = calibratedScanSizeNm,
+            NmPerPixel = calibratedScanSizeNm / Math.Max(1, decoded.Value.Width),
             Data = decoded.Value.Data,
             Unit = "nm",
-            ChannelDisplay = "Image intensity",
+            ChannelDisplay = calibration is null ? "Image intensity" : $"Image intensity ({calibration.SourceLabel})",
             PreferScientificPreview = false
         };
     }
@@ -337,5 +345,80 @@ public sealed class FileLoadingService
     {
         var match = Regex.Match(raw ?? string.Empty, "\\)\\s*([-+]?\\d*\\.?\\d+(?:[eE][-+]?\\d+)?)\\s*V\\b", RegexOptions.IgnoreCase);
         return match.Success ? double.Parse(match.Groups[1].Value, CultureInfo.InvariantCulture) : null;
+    }
+
+    private sealed class RawCalibrationInfo
+    {
+        public double ScanSizeNm { get; init; }
+        public string SourceLabel { get; init; } = "raw AFM";
+    }
+
+    private static RawCalibrationInfo? TryResolveSiblingRawCalibration(string imagePath, int width, int height)
+    {
+        try
+        {
+            var stem = Path.GetFileNameWithoutExtension(imagePath);
+            if (string.IsNullOrWhiteSpace(stem)) return null;
+
+            var directories = new[]
+            {
+                Path.GetDirectoryName(imagePath),
+                Directory.GetParent(Path.GetDirectoryName(imagePath) ?? string.Empty)?.FullName
+            }
+            .Where(path => !string.IsNullOrWhiteSpace(path))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Cast<string>();
+
+            foreach (var directory in directories)
+            {
+                var candidates = Directory.EnumerateFiles(directory, $"{stem}.*", SearchOption.TopDirectoryOnly)
+                    .Where(candidate =>
+                    {
+                        var ext = Path.GetExtension(candidate).TrimStart('.').ToLowerInvariant();
+                        return ext is "spm" or "dat" or "nid" || Regex.IsMatch(ext, "^\\d{3}$");
+                    })
+                    .OrderBy(candidate => candidate, StringComparer.OrdinalIgnoreCase);
+
+                foreach (var candidate in candidates)
+                {
+                    var loaded = TryLoadCalibrationSource(candidate);
+                    if (loaded is null) continue;
+                    if (loaded.Width > 0 && loaded.Height > 0 && (loaded.Width != width || loaded.Height != height))
+                    {
+                        continue;
+                    }
+
+                    return new RawCalibrationInfo
+                    {
+                        ScanSizeNm = loaded.ScanSizeNm,
+                        SourceLabel = Path.GetFileName(candidate)
+                    };
+                }
+            }
+        }
+        catch
+        {
+            // Best-effort calibration only.
+        }
+
+        return null;
+    }
+
+    private static LoadedHeightMap? TryLoadCalibrationSource(string path)
+    {
+        try
+        {
+            var bytes = File.ReadAllBytes(path);
+            var bruker = ParseBruker(bytes, path);
+            if (bruker is not null) return bruker;
+
+            var ext = Path.GetExtension(path).TrimStart('.').ToLowerInvariant();
+            var isRaw = ext is "spm" or "dat" or "nid" || Regex.IsMatch(ext, "^\\d{3}$");
+            return isRaw ? ParseRaw(bytes, path, 500) : null;
+        }
+        catch
+        {
+            return null;
+        }
     }
 }

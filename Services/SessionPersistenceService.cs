@@ -71,6 +71,9 @@ public sealed class FileSessionSnapshot
     public double AntibioticDoseUgPerMl { get; set; }
     public int SequenceOrder { get; set; }
     public double GuideCorridorWidthNm { get; set; }
+    public string DisplayRangeMode { get; set; } = "auto";
+    public double FixedDisplayMin { get; set; }
+    public double FixedDisplayMax { get; set; } = 1;
     public bool GuideLineFinished { get; set; }
     public List<PointSnapshot> GuidePoints { get; set; } = new();
     public List<PointSnapshot> ProfileLine { get; set; } = new();

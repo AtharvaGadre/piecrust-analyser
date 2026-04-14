@@ -15,6 +15,11 @@ public sealed class PixelSelectedEventArgs : EventArgs
 
 public sealed class HeightMapCanvasControl : Control
 {
+    public HeightMapCanvasControl()
+    {
+        RenderOptions.SetBitmapInterpolationMode(this, BitmapInterpolationMode.HighQuality);
+    }
+
     static HeightMapCanvasControl()
     {
         AffectsRender<HeightMapCanvasControl>(
@@ -98,7 +103,13 @@ public sealed class HeightMapCanvasControl : Control
         if (Bitmap is null) return;
 
         var imageRect = GetImageRect();
-        context.DrawImage(Bitmap, new Rect(0, 0, Bitmap.PixelSize.Width, Bitmap.PixelSize.Height), imageRect);
+        using (context.PushRenderOptions(new RenderOptions
+               {
+                   BitmapInterpolationMode = BitmapInterpolationMode.HighQuality
+               }))
+        {
+            context.DrawImage(Bitmap, new Rect(0, 0, Bitmap.PixelSize.Width, Bitmap.PixelSize.Height), imageRect);
+        }
         DrawOriginMarker(context, imageRect);
         DrawGuide(context, imageRect);
         DrawProfile(context, imageRect);

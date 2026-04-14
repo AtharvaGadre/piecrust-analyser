@@ -129,9 +129,11 @@ public sealed class LinePlotControl : Control
             }
 
             var brush = new SolidColorBrush(Color.Parse(line.Color), line.Opacity);
-            var pen = line.Dashed
-                ? new Pen(brush, line.Thickness, dashStyle: new DashStyle(new[] { 5d, 4d }, 0))
-                : new Pen(brush, line.Thickness);
+            var pen = line.Dotted
+                ? new Pen(brush, line.Thickness, dashStyle: new DashStyle(new[] { 1.2d, 4.2d }, 0))
+                : line.Dashed
+                    ? new Pen(brush, line.Thickness, dashStyle: new DashStyle(new[] { 5d, 4d }, 0))
+                    : new Pen(brush, line.Thickness);
             for (var i = 1; i < points.Count; i++) context.DrawLine(pen, points[i - 1], points[i]);
         }
 

@@ -9,23 +9,67 @@ public sealed class PiecrustAnalysisService
 
     public IReadOnlyList<PlotPoint> BuildLineProfile(PiecrustFileState file)
     {
-        if (file.ProfileLine.Count < 2 || file.HeightData.Length == 0) return Array.Empty<PlotPoint>();
+        var sourceData = file.DisplayHeightData.Length > 0
+            ? file.DisplayHeightData
+            : file.RawHeightData.Length > 0
+                ? file.RawHeightData
+                : file.HeightData;
+        if (file.ProfileLine.Count < 2 || sourceData.Length == 0) return Array.Empty<PlotPoint>();
         var p1 = file.ProfileLine[0];
         var p2 = file.ProfileLine[1];
         var dx = p2.X - p1.X;
         var dy = p2.Y - p1.Y;
-        var len = Math.Sqrt(dx * dx + dy * dy);
-        var samples = Math.Max(32, (int)Math.Round(len * 2));
-        var profile = new List<PlotPoint>(samples + 1);
-        for (var i = 0; i <= samples; i++)
+        var distancePx = Math.Sqrt(dx * dx + dy * dy);
+        if (!(distancePx > 1e-8)) return Array.Empty<PlotPoint>();
+
+        var tangentX = dx / distancePx;
+        var tangentY = dy / distancePx;
+        var normalX = -tangentY;
+        var normalY = tangentX;
+        var oversamplePerPixel = 8.0;
+        var normalHalfWidthPx = 2.25;
+        var normalSamples = 9;
+        var steps = Math.Max(96, (int)Math.Ceiling(distancePx * oversamplePerPixel));
+        var distancesNm = new double[steps + 1];
+        var values = new double[steps + 1];
+
+        for (var i = 0; i <= steps; i++)
         {
-            var t = i / (double)Math.Max(1, samples);
+            var t = i / (double)steps;
             var x = p1.X + dx * t;
             var y = p1.Y + dy * t;
-            var dNm = t * len * file.NmPerPixel;
-            var h = StatisticsAndGeometry.BilinearClamped(file.HeightData, file.PixelWidth, file.PixelHeight, x, y);
-            profile.Add(new PlotPoint(dNm, h));
+            distancesNm[i] = t * distancePx * file.NmPerPixel;
+
+            double weightedSum = 0;
+            double weightSum = 0;
+            for (var sample = 0; sample < normalSamples; sample++)
+            {
+                var frac = normalSamples == 1 ? 0 : sample / (double)(normalSamples - 1) * 2 - 1;
+                var offset = frac * normalHalfWidthPx;
+                var sigma = Math.Max(0.35, normalHalfWidthPx * 0.65);
+                var weight = Math.Exp(-(offset * offset) / (2 * sigma * sigma));
+                var sampleX = x + normalX * offset;
+                var sampleY = y + normalY * offset;
+                weightedSum += StatisticsAndGeometry.BilinearClamped(sourceData, file.PixelWidth, file.PixelHeight, sampleX, sampleY) * weight;
+                weightSum += weight;
+            }
+
+            values[i] = weightSum > 0
+                ? weightedSum / weightSum
+                : StatisticsAndGeometry.BilinearClamped(sourceData, file.PixelWidth, file.PixelHeight, x, y);
         }
+
+        var gaussianPreSmooth = StatisticsAndGeometry.MovingGaussianSmooth(values, 3);
+        var baseWindow = Math.Max(17, 2 * ((steps + 1) / 18) + 1);
+        var firstWindow = Math.Min(51, baseWindow % 2 == 1 ? baseWindow : baseWindow + 1);
+        var secondWindowCandidate = firstWindow - 8;
+        if (secondWindowCandidate % 2 == 0) secondWindowCandidate--;
+        var secondWindow = Math.Max(11, secondWindowCandidate);
+        var smooth1 = StatisticsAndGeometry.SavitzkyGolaySmooth(gaussianPreSmooth, firstWindow, 3);
+        var smooth2 = StatisticsAndGeometry.SavitzkyGolaySmooth(smooth1, secondWindow, 3);
+
+        var profile = new PlotPoint[steps + 1];
+        for (var i = 0; i <= steps; i++) profile[i] = new PlotPoint(distancesNm[i], smooth2[i]);
         return profile;
     }
 
@@ -116,6 +160,7 @@ public sealed class PiecrustAnalysisService
             PeakSeparationNm = peakSeparation,
             DipDepthNm = dipDepth,
             BimodalWeight = peakSeparation > 0 ? 1 : 0,
+            HeightToWidthRatio = heightSummary.Mean / Math.Max(1e-9, widthSummary.Mean),
             WidthSummary = widthSummary,
             HeightSummary = heightSummary
         };
@@ -256,6 +301,34 @@ public sealed class PiecrustAnalysisService
         return output;
     }
 
+    public IReadOnlyList<BoxPlotDataset> BuildHeightWidthRatioBoxPlots(IEnumerable<PiecrustFileState> files)
+    {
+        var output = new List<BoxPlotDataset>();
+        var stageColors = new Dictionary<string, string>
+        {
+            ["early"] = "#6b9358",
+            ["middle"] = "#bf8741",
+            ["late"] = "#9d5b4d"
+        };
+
+        foreach (var stage in StageOrder)
+        {
+            var stageFiles = files
+                .Where(f => string.Equals(f.Stage, stage, StringComparison.OrdinalIgnoreCase) && f.GuidedSummary is not null)
+                .ToArray();
+            var values = stageFiles
+                .Select(file => file.GuidedSummary!.HeightToWidthRatio)
+                .Where(double.IsFinite)
+                .ToArray();
+
+            var stats = StatisticsAndGeometry.Summarise(values);
+            if (stats is null) continue;
+            var (meanMarker, meanError) = BuildStageUncertainty(stageFiles, file => file.GuidedSummary!.HeightToWidthRatio, _ => 0);
+            output.Add(new BoxPlotDataset { Label = stage, Stats = stats, Color = stageColors[stage], MeanMarker = meanMarker, MeanError = meanError });
+        }
+        return output;
+    }
+
     public IReadOnlyList<StageSummaryRow> BuildStageSummaries(IEnumerable<PiecrustFileState> files)
     {
         var rows = new List<StageSummaryRow>();
@@ -268,6 +341,7 @@ public sealed class PiecrustAnalysisService
 
             var heightMeans = stageFiles.Select(file => file.GuidedSummary!.MeanHeightNm).Where(double.IsFinite).ToArray();
             var widthMeans = stageFiles.Select(file => file.GuidedSummary!.MeanWidthNm).Where(double.IsFinite).ToArray();
+            var ratioMeans = stageFiles.Select(file => file.GuidedSummary!.HeightToWidthRatio).Where(double.IsFinite).ToArray();
             rows.Add(new StageSummaryRow
             {
                 Stage = stage,
@@ -275,7 +349,9 @@ public sealed class PiecrustAnalysisService
                 HeightMeanNm = heightMeans.Length == 0 ? 0 : StatisticsAndGeometry.Mean(heightMeans),
                 HeightStdNm = heightMeans.Length == 0 ? 0 : StatisticsAndGeometry.StandardDeviation(heightMeans),
                 WidthMeanNm = widthMeans.Length == 0 ? 0 : StatisticsAndGeometry.Mean(widthMeans),
-                WidthStdNm = widthMeans.Length == 0 ? 0 : StatisticsAndGeometry.StandardDeviation(widthMeans)
+                WidthStdNm = widthMeans.Length == 0 ? 0 : StatisticsAndGeometry.StandardDeviation(widthMeans),
+                HeightWidthRatioMean = ratioMeans.Length == 0 ? 0 : StatisticsAndGeometry.Mean(ratioMeans),
+                HeightWidthRatioStd = ratioMeans.Length == 0 ? 0 : StatisticsAndGeometry.StandardDeviation(ratioMeans)
             });
         }
 
@@ -340,11 +416,12 @@ public sealed class PiecrustAnalysisService
             MeanHeightNm = file.GuidedSummary.MeanHeightNm,
             MeanWidthNm = file.GuidedSummary.MeanWidthNm,
             HeightSemNm = file.GuidedSummary.HeightSemNm,
-            WidthSemNm = file.GuidedSummary.WidthSemNm
+            WidthSemNm = file.GuidedSummary.WidthSemNm,
+            HeightToWidthRatio = file.GuidedSummary.HeightToWidthRatio
         };
     }
 
-    public SurfaceSimulationResult? BuildSurfaceSimulation(IReadOnlyList<PiecrustFileState> files, PiecrustFileState startFile, PiecrustFileState endFile, int frameCount = 21, int maxGridWidth = 180)
+    public SurfaceSimulationResult? BuildSurfaceSimulation(IReadOnlyList<PiecrustFileState> files, PiecrustFileState startFile, PiecrustFileState endFile, SupervisedGrowthModel? supervisedModel = null, int frameCount = 21, int maxGridWidth = 180)
     {
         if (files.Count == 0 || ReferenceEquals(startFile, endFile)) return null;
         var ordered = BuildOrderedSimulationReferences(files, startFile, endFile);
@@ -352,49 +429,11 @@ public sealed class PiecrustAnalysisService
 
         frameCount = Math.Max(3, frameCount);
         var useGuidedAlignment = ordered.Files.All(HasUsableGuide);
-        var targetDirection = new PointD(0, 1);
-        var alignments = new GuideAlignmentInfo?[ordered.Files.Length];
-        var globalMinXNm = 0.0;
-        var globalMaxXNm = 0.0;
-        var globalMinYNm = 0.0;
-        var globalMaxYNm = 0.0;
-
-        if (useGuidedAlignment)
-        {
-            var haveExtents = false;
-            for (var i = 0; i < ordered.Files.Length; i++)
-            {
-                var alignment = BuildGuideAlignmentInfo(ordered.Files[i], targetDirection);
-                if (alignment is null)
-                {
-                    useGuidedAlignment = false;
-                    break;
-                }
-
-                alignments[i] = alignment;
-                if (!haveExtents)
-                {
-                    globalMinXNm = alignment.MinXNm;
-                    globalMaxXNm = alignment.MaxXNm;
-                    globalMinYNm = alignment.MinYNm;
-                    globalMaxYNm = alignment.MaxYNm;
-                    haveExtents = true;
-                }
-                else
-                {
-                    globalMinXNm = Math.Min(globalMinXNm, alignment.MinXNm);
-                    globalMaxXNm = Math.Max(globalMaxXNm, alignment.MaxXNm);
-                    globalMinYNm = Math.Min(globalMinYNm, alignment.MinYNm);
-                    globalMaxYNm = Math.Max(globalMaxYNm, alignment.MaxYNm);
-                }
-            }
-        }
-
         var targetWidthNm = useGuidedAlignment
-            ? Math.Max(1, globalMaxXNm - globalMinXNm)
+            ? Math.Max(1, ordered.Files.Max(file => Math.Max(4, file.GuideCorridorWidthNm * 1.2)))
             : GetScanSizeXNm(startFile);
         var targetHeightNm = useGuidedAlignment
-            ? Math.Max(1, globalMaxYNm - globalMinYNm)
+            ? Math.Max(1, ordered.Files.Max(file => Math.Max(file.NmPerPixel, StatisticsAndGeometry.PolylineLengthPixels(file.GuidePoints) * file.NmPerPixel)))
             : GetScanSizeYNm(startFile);
 
         var pixelsPerNm = Math.Min(maxGridWidth / Math.Max(1, targetWidthNm), maxGridWidth / Math.Max(1, targetHeightNm));
@@ -410,9 +449,7 @@ public sealed class PiecrustAnalysisService
             double[] resampled;
             if (useGuidedAlignment)
             {
-                var alignment = alignments[fileIndex];
-                if (alignment is null) return null;
-                resampled = ResampleGuideAlignedFullImage(file, alignment, globalMinXNm, globalMinYNm, targetWidthNm, targetHeightNm, targetWidth, targetHeight);
+                resampled = ResampleGuidedCorridorSurface(file, targetWidthNm, targetHeightNm, targetWidth, targetHeight);
             }
             else
             {
@@ -469,6 +506,25 @@ public sealed class PiecrustAnalysisService
             }
         }
 
+        var usesSupervisedLearning = supervisedModel is { ExampleCount: >= 3 } && lockedReferenceSurface is not null;
+        var supervisedBlendWeight = usesSupervisedLearning ? supervisedModel!.BlendWeight : 0;
+        if (usesSupervisedLearning)
+        {
+            for (var frameIndex = 0; frameIndex < frames.Length; frameIndex++)
+            {
+                var context = BuildGrowthPredictionContext(ordered.Files, ordered.Positions, frameProgresses[frameIndex], frames[frameIndex], targetWidth, targetHeight, targetWidthNm);
+                var predictedShape = SupervisedGrowthLearningService.PredictShape(supervisedModel!, context);
+                if (predictedShape.Length != 5) continue;
+
+                var predictedProfile = BuildCenteredGaussianTemplateFromShape(predictedShape, targetWidth);
+                if (predictedProfile.Length != targetWidth) continue;
+
+                var guidedFrame = ApplySupervisedProfileGuidance(frames[frameIndex], targetWidth, targetHeight, predictedProfile, supervisedBlendWeight);
+                guidedFrame = CenterSurfaceByBimodalProfile(guidedFrame, targetWidth, targetHeight);
+                frames[frameIndex] = AlignSurfaceToReference(guidedFrame, lockedReferenceSurface!, targetWidth, targetHeight, maxShift: 6);
+            }
+        }
+
         var displayRange = EstimateSurfaceRange(frames);
         var scanSizeNmX = useGuidedAlignment ? targetWidthNm : GetScanSizeXNm(startFile);
         var scanSizeNmY = useGuidedAlignment ? targetHeightNm : GetScanSizeYNm(startFile);
@@ -493,7 +549,10 @@ public sealed class PiecrustAnalysisService
             Frames = frames,
             DisplayMin = displayRange.Min,
             DisplayMax = displayRange.Max,
-            UsesGuidedAlignment = useGuidedAlignment
+            UsesGuidedAlignment = useGuidedAlignment,
+            UsesSupervisedLearning = usesSupervisedLearning,
+            SupervisedExampleCount = supervisedModel?.ExampleCount ?? 0,
+            SupervisedBlendWeight = supervisedBlendWeight
         };
     }
 
@@ -834,6 +893,164 @@ public sealed class PiecrustAnalysisService
         return (selected.ToArray(), positions);
     }
 
+    private sealed class CrossSectionDescriptors
+    {
+        public double MeanHeightNm { get; init; }
+        public double MeanWidthNm { get; init; }
+        public double HeightWidthRatio { get; init; }
+        public double PeakSeparationNm { get; init; }
+        public double DipDepthNm { get; init; }
+        public double RoughnessNm { get; init; }
+    }
+
+    private GrowthPredictionContext BuildGrowthPredictionContext(IReadOnlyList<PiecrustFileState> orderedFiles, IReadOnlyList<double> orderedPositions, double progress, double[] currentFrame, int width, int height, double scanSizeNmX)
+    {
+        var estimated = EstimateCrossSectionDescriptors(currentFrame, width, height, scanSizeNmX);
+        return new GrowthPredictionContext(
+            StatisticsAndGeometry.Clamp(progress, 0, 1),
+            InterpolateReferenceFeature(orderedFiles, orderedPositions, progress, file => StageTo01(file.Stage), progress),
+            InterpolateReferenceFeature(orderedFiles, orderedPositions, progress, file => string.Equals(file.ConditionType, "control", StringComparison.OrdinalIgnoreCase) ? 1.0 : 0.0, 0),
+            InterpolateReferenceFeature(orderedFiles, orderedPositions, progress, file => string.Equals(file.ConditionType, "treated", StringComparison.OrdinalIgnoreCase) ? 1.0 : 0.0, 0),
+            InterpolateReferenceFeature(orderedFiles, orderedPositions, progress, file => Math.Log(1 + Math.Max(0, file.AntibioticDoseUgPerMl)), 0),
+            InterpolateReferenceFeature(orderedFiles, orderedPositions, progress, file => file.GuidedSummary?.MeanHeightNm, estimated.MeanHeightNm),
+            InterpolateReferenceFeature(orderedFiles, orderedPositions, progress, file => file.GuidedSummary?.MeanWidthNm, estimated.MeanWidthNm),
+            InterpolateReferenceFeature(orderedFiles, orderedPositions, progress, file => file.GuidedSummary?.HeightToWidthRatio, estimated.HeightWidthRatio),
+            InterpolateReferenceFeature(orderedFiles, orderedPositions, progress, file => file.GuidedSummary?.PeakSeparationNm, estimated.PeakSeparationNm),
+            InterpolateReferenceFeature(orderedFiles, orderedPositions, progress, file => file.GuidedSummary?.DipDepthNm, estimated.DipDepthNm),
+            InterpolateReferenceFeature(orderedFiles, orderedPositions, progress, file => file.GuidedSummary?.RoughnessNm, estimated.RoughnessNm),
+            InterpolateReferenceFeature(orderedFiles, orderedPositions, progress, file => file.GuidedSummary?.Continuity, 1.0));
+    }
+
+    private static double InterpolateReferenceFeature(IReadOnlyList<PiecrustFileState> orderedFiles, IReadOnlyList<double> orderedPositions, double progress, Func<PiecrustFileState, double?> selector, double fallback)
+    {
+        var samples = new List<(double Position, double Value)>(orderedFiles.Count);
+        for (var i = 0; i < orderedFiles.Count; i++)
+        {
+            var value = selector(orderedFiles[i]);
+            if (value is null || !double.IsFinite(value.Value)) continue;
+            samples.Add((orderedPositions[i], value.Value));
+        }
+
+        if (samples.Count == 0) return fallback;
+        if (samples.Count == 1) return samples[0].Value;
+        progress = StatisticsAndGeometry.Clamp(progress, 0, 1);
+        if (progress <= samples[0].Position) return samples[0].Value;
+        if (progress >= samples[^1].Position) return samples[^1].Value;
+
+        for (var i = 1; i < samples.Count; i++)
+        {
+            var a = samples[i - 1];
+            var b = samples[i];
+            if (progress > b.Position) continue;
+            var mix = StatisticsAndGeometry.Clamp((progress - a.Position) / Math.Max(1e-9, b.Position - a.Position), 0, 1);
+            return a.Value * (1 - mix) + b.Value * mix;
+        }
+
+        return samples[^1].Value;
+    }
+
+    private CrossSectionDescriptors EstimateCrossSectionDescriptors(double[] currentFrame, int width, int height, double scanSizeNmX)
+    {
+        var profile = BuildSurfaceCrossSection(currentFrame, width, height, scanSizeNmX);
+        if (profile.Count == 0)
+        {
+            return new CrossSectionDescriptors();
+        }
+
+        var rawValues = profile.Select(point => point.Y).ToArray();
+        var smoothed = StatisticsAndGeometry.MovingGaussianSmooth(rawValues, 3);
+        var corrected = ShiftToZero(BaselineCorrect(smoothed));
+        var offsetsNm = profile.Select(point => point.X).ToArray();
+        var peaks = FindPeaks(corrected, offsetsNm).OrderBy(peak => peak.OffsetNm).ToArray();
+        var strongest = peaks.OrderByDescending(peak => peak.Height).FirstOrDefault();
+        var widthNm = strongest is null ? 0 : ComputePeakFwhm(corrected, offsetsNm, strongest.Index, strongest.Baseline);
+        var peakSeparationNm = peaks.Length >= 2 ? Math.Abs(peaks[^1].OffsetNm - peaks[0].OffsetNm) : 0;
+        var dipDepthNm = 0.0;
+        if (peaks.Length >= 2)
+        {
+            var leftIndex = peaks[0].Index;
+            var rightIndex = peaks[^1].Index;
+            var dip = corrected.Skip(leftIndex).Take(rightIndex - leftIndex + 1).DefaultIfEmpty(0).Min();
+            dipDepthNm = Math.Max(0, ((peaks[0].Height + peaks[^1].Height) / 2.0) - dip);
+        }
+
+        double roughness = 0;
+        for (var i = 0; i < rawValues.Length; i++) roughness += Math.Abs(rawValues[i] - smoothed[i]);
+        roughness /= Math.Max(1, rawValues.Length);
+
+        var meanHeightNm = corrected.Length == 0 ? 0 : corrected.Max();
+        return new CrossSectionDescriptors
+        {
+            MeanHeightNm = meanHeightNm,
+            MeanWidthNm = widthNm,
+            HeightWidthRatio = meanHeightNm / Math.Max(1e-9, widthNm),
+            PeakSeparationNm = peakSeparationNm,
+            DipDepthNm = dipDepthNm,
+            RoughnessNm = roughness
+        };
+    }
+
+    private static double[] BuildCenteredGaussianTemplateFromShape(IReadOnlyList<double> shape, int count)
+    {
+        if (shape.Count < 5 || count <= 0) return Array.Empty<double>();
+        var amplitudeLeft = Math.Max(0, shape[0]);
+        var sigmaLeft = Math.Max(0.5, StatisticsAndGeometry.Clamp(shape[1], 0.01, 0.35) * Math.Max(1.0, count - 1.0));
+        var amplitudeRight = Math.Max(0, shape[2]);
+        var sigmaRight = Math.Max(0.5, StatisticsAndGeometry.Clamp(shape[3], 0.01, 0.35) * Math.Max(1.0, count - 1.0));
+        var separation = StatisticsAndGeometry.Clamp(shape[4], 0.02, 0.90) * Math.Max(1.0, count - 1.0);
+        var center = (count - 1) / 2.0;
+        var leftCenter = center - separation / 2.0;
+        var rightCenter = center + separation / 2.0;
+        var output = new double[count];
+        for (var i = 0; i < count; i++)
+        {
+            output[i] =
+                amplitudeLeft * Math.Exp(-Math.Pow(i - leftCenter, 2) / (2 * sigmaLeft * sigmaLeft)) +
+                amplitudeRight * Math.Exp(-Math.Pow(i - rightCenter, 2) / (2 * sigmaRight * sigmaRight));
+        }
+
+        return ShiftToZero(output);
+    }
+
+    private static double[] ApplySupervisedProfileGuidance(double[] frame, int width, int height, IReadOnlyList<double> predictedProfile, double blendWeight)
+    {
+        if (frame.Length == 0 || width <= 0 || height <= 0 || predictedProfile.Count != width || !(blendWeight > 1e-6)) return frame;
+        var currentProfile = BuildHorizontalPeakProfile(frame, width, height);
+        var currentShape = ShiftToZero(BaselineCorrect(StatisticsAndGeometry.MovingGaussianSmooth(currentProfile, 3)));
+        if (currentShape.Length != predictedProfile.Count) return frame;
+
+        var output = new double[frame.Length];
+        Array.Copy(frame, output, frame.Length);
+        var centerY = (height - 1) / 2.0;
+        var sigmaY = Math.Max(6.0, height * 0.22);
+
+        for (var y = 0; y < height; y++)
+        {
+            var verticalWeight = Math.Exp(-Math.Pow(y - centerY, 2) / (2 * sigmaY * sigmaY));
+            for (var x = 0; x < width; x++)
+            {
+                var delta = predictedProfile[x] - currentShape[x];
+                output[y * width + x] += delta * blendWeight * verticalWeight;
+            }
+        }
+
+        var min = output.Min();
+        if (min < 0)
+        {
+            for (var i = 0; i < output.Length; i++) output[i] -= min;
+        }
+
+        return output;
+    }
+
+    private static double StageTo01(string stage) => stage switch
+    {
+        "early" => 0.15,
+        "middle" => 0.55,
+        "late" => 0.90,
+        _ => 0.50
+    };
+
     private static double[] ResampleSurface(double[] data, int sourceWidth, int sourceHeight, int targetWidth, int targetHeight)
     {
         if (data.Length == 0 || sourceWidth <= 0 || sourceHeight <= 0 || targetWidth <= 0 || targetHeight <= 0) return Array.Empty<double>();
@@ -987,6 +1204,59 @@ public sealed class PiecrustAnalysisService
         }
 
         return output;
+    }
+
+    private static double[] ResampleGuidedCorridorSurface(PiecrustFileState file, double targetWidthNm, double targetHeightNm, int targetWidth, int targetHeight)
+    {
+        if (!HasUsableGuide(file) || file.HeightData.Length == 0 || targetWidth <= 0 || targetHeight <= 0) return Array.Empty<double>();
+        var sampleIntervalNm = targetHeight <= 1 ? targetHeightNm : targetHeightNm / Math.Max(1, targetHeight - 1);
+        var sampled = StatisticsAndGeometry.SampleCurveAtPhysicalInterval(file.GuidePoints, Math.Max(file.NmPerPixel * 0.5, sampleIntervalNm), file.NmPerPixel);
+        if (sampled.Count < 2) return Array.Empty<double>();
+
+        var output = new double[targetWidth * targetHeight];
+        for (var row = 0; row < targetHeight; row++)
+        {
+            var arcNm = targetHeight == 1 ? 0 : row * targetHeightNm / Math.Max(1, targetHeight - 1.0);
+            var (point, tangent) = InterpolateGuideFrame(sampled, arcNm);
+            var normal = new PointD(-tangent.Y, tangent.X);
+            for (var column = 0; column < targetWidth; column++)
+            {
+                var offsetNm = targetWidth == 1 ? 0 : -targetWidthNm / 2.0 + column * targetWidthNm / Math.Max(1, targetWidth - 1.0);
+                var offsetPx = offsetNm / Math.Max(1e-9, file.NmPerPixel);
+                var x = point.X + normal.X * offsetPx;
+                var y = point.Y + normal.Y * offsetPx;
+                output[row * targetWidth + column] = SampleSurfaceOrBackground(file.HeightData, file.PixelWidth, file.PixelHeight, x, y, 0);
+            }
+        }
+
+        return output;
+    }
+
+    private static (PointD Point, PointD Tangent) InterpolateGuideFrame(IReadOnlyList<(PointD Point, double ArcNm)> sampled, double arcNm)
+    {
+        if (sampled.Count == 0) return (new PointD(0, 0), new PointD(1, 0));
+        if (arcNm <= sampled[0].ArcNm) return (sampled[0].Point, StatisticsAndGeometry.GetCurveTangent(sampled, 0));
+        if (arcNm >= sampled[^1].ArcNm) return (sampled[^1].Point, StatisticsAndGeometry.GetCurveTangent(sampled, sampled.Count - 1));
+
+        for (var i = 1; i < sampled.Count; i++)
+        {
+            var previous = sampled[i - 1];
+            var current = sampled[i];
+            if (arcNm > current.ArcNm) continue;
+
+            var span = Math.Max(1e-9, current.ArcNm - previous.ArcNm);
+            var mix = StatisticsAndGeometry.Clamp((arcNm - previous.ArcNm) / span, 0, 1);
+            var point = new PointD(
+                previous.Point.X + (current.Point.X - previous.Point.X) * mix,
+                previous.Point.Y + (current.Point.Y - previous.Point.Y) * mix);
+            var dx = current.Point.X - previous.Point.X;
+            var dy = current.Point.Y - previous.Point.Y;
+            var length = Math.Sqrt(dx * dx + dy * dy);
+            var tangent = length > 1e-9 ? new PointD(dx / length, dy / length) : StatisticsAndGeometry.GetCurveTangent(sampled, i);
+            return (point, tangent);
+        }
+
+        return (sampled[^1].Point, StatisticsAndGeometry.GetCurveTangent(sampled, sampled.Count - 1));
     }
 
     private static double[] PrepareSimulationSurface(double[] surface, int width, int height)

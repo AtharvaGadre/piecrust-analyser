@@ -67,7 +67,7 @@
                     <Button Content="Export Guided CSV" Click="OnExportCsvClick"/>
                 </WrapPanel>
 
-                <Grid ColumnDefinitions="220,180,160,160,*" ColumnSpacing="10">
+                <Grid ColumnDefinitions="220,180,160,160,280,*" ColumnSpacing="10">
                     <StackPanel Grid.Column="0" Spacing="2">
                         <TextBlock Text="Files" FontWeight="SemiBold" Foreground="#d8b07a"/>
                         <ListBox ItemsSource="{Binding Files}" SelectedItem="{Binding SelectedFile, Mode=TwoWay}" Height="110" Background="#120d08" BorderBrush="#352615">
@@ -118,7 +118,7 @@
             <TabItem Header="Image + Profile">
                 <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
                     <StackPanel Margin="10" Spacing="8" MinWidth="1040">
-                        <Grid ColumnDefinitions="2.2*,1*" ColumnSpacing="10">
+                        <Grid ColumnDefinitions="2.45*,0.95*" ColumnSpacing="10">
                             <Border Background="#161008" BorderBrush="#352615" BorderThickness="1" CornerRadius="8" Padding="8">
                                 <controls:HeightMapCanvasControl x:Name="HeightMapCanvas"
                                                                  Bitmap="{Binding SelectedFile.PreviewBitmap}"
@@ -130,13 +130,17 @@
 
                             <Border Grid.Column="1" Background="#161008" BorderBrush="#352615" BorderThickness="1" CornerRadius="8" Padding="8">
                                 <ScrollViewer>
-                                    <StackPanel Spacing="8">
-                                        <TextBlock Text="Current File" FontSize="16" FontWeight="Bold" Foreground="#d8b07a"/>
+                                    <StackPanel Spacing="10">
+                                        <TextBlock Text="Current File" FontSize="15" FontWeight="Bold" Foreground="#d8b07a"/>
                                         <TextBlock Text="{Binding SelectedFileNameText}" FontWeight="SemiBold"/>
+                                        <TextBlock Text="{Binding SelectedChannelDisplayText}"/>
                                         <TextBlock Text="{Binding SelectedDisplayMinText}"/>
                                         <TextBlock Text="{Binding SelectedDisplayMaxText}"/>
+                                        <TextBlock Text="{Binding SelectedDisplayReferenceText}"/>
+                                        <TextBlock Text="{Binding SelectedEstimatedNoiseText}"/>
                                         <TextBlock Text="{Binding SelectedMeanHeightText}"/>
                                         <TextBlock Text="{Binding SelectedMeanWidthText}"/>
+                                        <TextBlock Text="{Binding SelectedHeightWidthRatioText}"/>
                                         <TextBlock Text="{Binding SelectedContinuityText}"/>
                                         <TextBlock Text="{Binding SelectedPeakSeparationText}"/>
                                         <Separator/>
@@ -144,6 +148,43 @@
                                         <TextBlock Text="{Binding CurrentAdditionRateText}"/>
                                         <TextBlock Text="{Binding CurrentRemovalRateText}"/>
                                         <TextBlock Text="{Binding CurrentCompromiseText}"/>
+                                        <Separator/>
+                                        <TextBlock Text="Colour Mapping" FontSize="15" FontWeight="Bold" Foreground="#d8b07a"/>
+                                        <StackPanel Orientation="Horizontal" Spacing="8">
+                                            <ComboBox ItemsSource="{Binding DisplayModeOptions}" SelectedItem="{Binding SelectedDisplayRangeMode, Mode=TwoWay}" Width="110"/>
+                                            <Button Content="Set Auto As Fixed" Click="OnSetAutoDisplayFixedClick"/>
+                                        </StackPanel>
+                                        <Border Background="#16100a" BorderBrush="#2a1a0a" BorderThickness="1" CornerRadius="5" Padding="6">
+                                            <controls:DisplayRangeHistogramControl Histogram="{Binding SelectedDisplayHistogram}"
+                                                                                   WindowStartPercent="{Binding SelectedDisplayWindowStartPercent}"
+                                                                                   WindowEndPercent="{Binding SelectedDisplayWindowEndPercent}"
+                                                                                   Height="78"/>
+                                        </Border>
+                                        <Grid ColumnDefinitions="42,*,84,28" RowDefinitions="Auto,Auto" ColumnSpacing="6" RowSpacing="6">
+                                            <TextBlock Grid.Row="0" Grid.Column="0" Text="Start" VerticalAlignment="Center"/>
+                                            <Slider Grid.Row="0" Grid.Column="1"
+                                                    Minimum="{Binding SelectedDisplayBoundsMin}"
+                                                    Maximum="{Binding SelectedDisplayBoundsMax}"
+                                                    TickFrequency="{Binding SelectedDisplaySliderStep}"
+                                                    Value="{Binding SelectedDisplayRangeMin, Mode=TwoWay}"/>
+                                            <TextBox Grid.Row="0" Grid.Column="2" Text="{Binding SelectedDisplayRangeMin, Mode=TwoWay}"/>
+                                            <TextBlock Grid.Row="0" Grid.Column="3" Text="{Binding SelectedFile.Unit}" VerticalAlignment="Center"/>
+                                            <TextBlock Grid.Row="1" Grid.Column="0" Text="End" VerticalAlignment="Center"/>
+                                            <Slider Grid.Row="1" Grid.Column="1"
+                                                    Minimum="{Binding SelectedDisplayBoundsMin}"
+                                                    Maximum="{Binding SelectedDisplayBoundsMax}"
+                                                    TickFrequency="{Binding SelectedDisplaySliderStep}"
+                                                    Value="{Binding SelectedDisplayRangeMax, Mode=TwoWay}"/>
+                                            <TextBox Grid.Row="1" Grid.Column="2" Text="{Binding SelectedDisplayRangeMax, Mode=TwoWay}"/>
+                                            <TextBlock Grid.Row="1" Grid.Column="3" Text="{Binding SelectedFile.Unit}" VerticalAlignment="Center"/>
+                                        </Grid>
+                                        <StackPanel Orientation="Horizontal" Spacing="6">
+                                            <TextBlock Text="Full range" Foreground="#8a7a5a" FontSize="11"/>
+                                            <TextBlock Text="{Binding SelectedDisplayBoundsMin, StringFormat={}{0:F2}}" Foreground="#8a7a5a" FontSize="11"/>
+                                            <TextBlock Text="to" Foreground="#8a7a5a" FontSize="11"/>
+                                            <TextBlock Text="{Binding SelectedDisplayBoundsMax, StringFormat={}{0:F2}}" Foreground="#8a7a5a" FontSize="11"/>
+                                            <TextBlock Text="{Binding SelectedFile.Unit}" Foreground="#8a7a5a" FontSize="11"/>
+                                        </StackPanel>
                                     </StackPanel>
                                 </ScrollViewer>
                             </Border>
@@ -176,13 +217,15 @@
                             <ItemsControl.ItemTemplate>
                                 <DataTemplate x:DataType="models:StageSummaryRow">
                                     <Border Background="#161008" BorderBrush="#352615" BorderThickness="1" CornerRadius="8" Padding="10" Margin="0,0,0,6">
-                                        <Grid ColumnDefinitions="*,*,*,*,*,*" ColumnSpacing="12">
+                                        <Grid ColumnDefinitions="*,*,*,*,*,*,*,*" ColumnSpacing="12">
                                             <TextBlock Text="{Binding Stage}" FontWeight="SemiBold" Foreground="#f0c978"/>
                                             <TextBlock Grid.Column="1" Text="{Binding ImageCount, StringFormat=Images {0}}"/>
                                             <TextBlock Grid.Column="2" Text="{Binding HeightMeanNm, StringFormat=Height {0:F2} nm}"/>
                                             <TextBlock Grid.Column="3" Text="{Binding HeightStdNm, StringFormat=Height SD {0:F2} nm}"/>
                                             <TextBlock Grid.Column="4" Text="{Binding WidthMeanNm, StringFormat=Width {0:F2} nm}"/>
                                             <TextBlock Grid.Column="5" Text="{Binding WidthStdNm, StringFormat=Width SD {0:F2} nm}"/>
+                                            <TextBlock Grid.Column="6" Text="{Binding HeightWidthRatioMean, StringFormat=H/W {0:F4}}"/>
+                                            <TextBlock Grid.Column="7" Text="{Binding HeightWidthRatioStd, StringFormat=H/W SD {0:F4}}"/>
                                         </Grid>
                                     </Border>
                                 </DataTemplate>
@@ -196,6 +239,10 @@
                         <Border Background="#161008" BorderBrush="#352615" BorderThickness="1" CornerRadius="8" MinWidth="980" Height="280">
                             <controls:BoxPlotControl Datasets="{Binding WidthBoxPlots}"/>
                         </Border>
+                        <TextBlock Text="Height/Width Ratio by Stage" FontWeight="Bold" Foreground="#d8b07a"/>
+                        <Border Background="#161008" BorderBrush="#352615" BorderThickness="1" CornerRadius="8" MinWidth="980" Height="280">
+                            <controls:BoxPlotControl Datasets="{Binding HeightWidthRatioBoxPlots}"/>
+                        </Border>
                     </StackPanel>
                 </ScrollViewer>
             </TabItem>
@@ -204,6 +251,7 @@
                 <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
                     <StackPanel Margin="10" Spacing="8" MinWidth="1040">
                         <TextBlock Text="Number imported TIFF/SPM references in sequence, choose a start and end file, and the model will use all numbered references in between to fit a polynomial surface evolution that fills the missing growth states." TextWrapping="Wrap" Foreground="#bca37d"/>
+                        <TextBlock Text="{Binding SupervisedModelStatusText}" TextWrapping="Wrap" Foreground="#d8c29a"/>
                         <StackPanel Orientation="Horizontal" Spacing="10">
                             <TextBlock Text="Start Reference" VerticalAlignment="Center"/>
                             <ComboBox ItemsSource="{Binding Files}" SelectedItem="{Binding SimulationStartFile, Mode=TwoWay}" Width="220">
@@ -239,28 +287,6 @@
                         </StackPanel>
                         <TextBlock Text="{Binding SimulationStatusText}" TextWrapping="Wrap" Foreground="#bca37d"/>
                         <TextBlock Text="{Binding SimulationReferenceSummaryText}" TextWrapping="Wrap" Foreground="#d8c29a"/>
-                        <Grid ColumnDefinitions="34,*" RowDefinitions="*,Auto" MinWidth="980">
-                            <TextBlock Grid.Row="0"
-                                       Grid.Column="0"
-                                       Text="{Binding SimulationSurfaceYAxisLabel}"
-                                       Foreground="#9f8866"
-                                       HorizontalAlignment="Center"
-                                       VerticalAlignment="Center"
-                                       RenderTransformOrigin="0.5,0.5">
-                                <TextBlock.RenderTransform>
-                                    <RotateTransform Angle="-90"/>
-                                </TextBlock.RenderTransform>
-                            </TextBlock>
-                            <Border Grid.Row="0" Grid.Column="1" Background="#161008" BorderBrush="#352615" BorderThickness="1" CornerRadius="8" Height="360">
-                                <controls:HeightMapCanvasControl Bitmap="{Binding SimulationSurfaceBitmap}"/>
-                            </Border>
-                            <TextBlock Grid.Row="1"
-                                       Grid.Column="1"
-                                       Text="{Binding SimulationSurfaceXAxisLabel}"
-                                       Foreground="#9f8866"
-                                       HorizontalAlignment="Center"
-                                       Margin="0,6,0,0"/>
-                        </Grid>
                         <TextBlock Text="{Binding SimulationSurfaceMetaText}" TextWrapping="Wrap" Foreground="#bca37d"/>
                         <Border Background="#161008" BorderBrush="#352615" BorderThickness="1" CornerRadius="8" MinWidth="980" Height="380">
                             <controls:LinePlotControl Series="{Binding SimulationSeries}"
@@ -270,6 +296,7 @@
                                                       FixedYMin="{Binding SimulationPlotFixedYMin}"
                                                       FixedYMax="{Binding SimulationPlotFixedYMax}"/>
                         </Border>
+                        <TextBlock Text="{Binding SimulationPlotLegendText}" Foreground="#d8c29a"/>
                     </StackPanel>
                 </ScrollViewer>
             </TabItem>
@@ -285,12 +312,13 @@
                             <ItemsControl.ItemTemplate>
                                 <DataTemplate>
                                     <Border Background="#161008" BorderBrush="#352615" BorderThickness="1" CornerRadius="8" Padding="10" Margin="0,0,0,8">
-                                        <Grid ColumnDefinitions="2*,*,*,*,*" ColumnSpacing="12">
+                                        <Grid ColumnDefinitions="2*,*,*,*,*,*" ColumnSpacing="12">
                                             <TextBlock Text="{Binding FileName}" FontWeight="SemiBold"/>
                                             <TextBlock Grid.Column="1" Text="{Binding DoseUgPerMl, StringFormat={}{0:F2} ug/mL}"/>
                                             <TextBlock Grid.Column="2" Text="{Binding MeanHeightNm, StringFormat=Height {0:F2} nm}"/>
                                             <TextBlock Grid.Column="3" Text="{Binding MeanWidthNm, StringFormat=Width {0:F2} nm}"/>
-                                            <TextBlock Grid.Column="4" Text="{Binding CompromiseDisplayText}"/>
+                                            <TextBlock Grid.Column="4" Text="{Binding HeightToWidthRatio, StringFormat=H/W {0:F4}}"/>
+                                            <TextBlock Grid.Column="5" Text="{Binding CompromiseDisplayText}"/>
                                         </Grid>
                                     </Border>
                                 </DataTemplate>

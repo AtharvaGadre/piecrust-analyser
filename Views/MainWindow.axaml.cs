@@ -72,6 +72,7 @@ public partial class MainWindow : Window
     private void OnClearGuideClick(object? sender, RoutedEventArgs e) => Vm.ClearGuideLine();
     private void OnRunGuidedExtractionClick(object? sender, RoutedEventArgs e) => Vm.RunGuidedExtraction();
     private void OnSelectionFieldChanged(object? sender, RoutedEventArgs e) => Vm.RefreshAfterSelectionEdit();
+    private void OnSetAutoDisplayFixedClick(object? sender, RoutedEventArgs e) => Vm.SetAutoDisplayAsFixed();
     private void OnRunPolynomialEvolutionClick(object? sender, RoutedEventArgs e) => Vm.RunPolynomialEvolution();
     private void OnToggleSimulationClick(object? sender, RoutedEventArgs e) => Vm.ToggleSimulationPlayback();
     private void OnResetSimulationClick(object? sender, RoutedEventArgs e) => Vm.ResetSimulationPlayback();
