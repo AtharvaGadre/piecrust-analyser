@@ -20,6 +20,10 @@ jobs:
             rid: osx-arm64
             artifact_name: pie-crust-analyser-macos-arm64
             archive_glob: publish/*.zip
+          - os: macos-13
+            rid: osx-x64
+            artifact_name: pie-crust-analyser-macos-x64
+            archive_glob: publish/*.zip
           - os: windows-latest
             rid: win-x64
             artifact_name: pie-crust-analyser-windows-x64
@@ -34,6 +38,16 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+
+      - name: Resolve release version
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF#refs/tags/v}"
+          else
+            VERSION="0.0.${GITHUB_RUN_NUMBER}"
+          fi
+          echo "APP_VERSION=$VERSION" >> "$GITHUB_ENV"
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
@@ -60,7 +74,7 @@ jobs:
           APP_ROOT="publish/${{ matrix.artifact_name }}/Pie Crust Analyser.app"
           mkdir -p "$APP_ROOT/Contents/MacOS" "$APP_ROOT/Contents/Resources"
           cp -R publish/${{ matrix.artifact_name }}/raw/* "$APP_ROOT/Contents/MacOS/"
-          cat > "$APP_ROOT/Contents/Info.plist" <<'PLIST'
+          cat > "$APP_ROOT/Contents/Info.plist" <<PLIST
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0">
@@ -72,9 +86,9 @@ jobs:
             <key>CFBundleIdentifier</key>
             <string>com.piecrustanalyser.desktop</string>
             <key>CFBundleVersion</key>
-            <string>1.0.0</string>
+            <string>${APP_VERSION}</string>
             <key>CFBundleShortVersionString</key>
-            <string>1.0.0</string>
+            <string>${APP_VERSION}</string>
             <key>CFBundleExecutable</key>
             <string>PieCrustAnalyser</string>
             <key>CFBundlePackageType</key>

@@ -1,28 +1,58 @@
 # Pie Crust Analyser
 
-Cross-platform desktop Pie Crust Analyser built with Avalonia and .NET.
+Cross-platform desktop microscopy analysis tool for guided piecrust extraction, morphology quantification, and growth modelling.
 
-## Current status
+## What It Does
 
-This desktop port currently includes:
-
-- loading `.spm`, `.tif`, `.tiff`, `.png`, `.jpg`, `.jpeg`
-- Gwyddion-style height-map preview rendering
-- straight line-profile marking and plotting
-- curved centre-line marking workflow
-- guided perpendicular sampling every 1 nm
-- guided width/height extraction with stage-ordered box plots
-- numbered reference ordering for imported files
-- full 2D surface growth simulation with selectable start/end files
-- polynomial gap-filling across numbered intermediate references
-- multi-image stage evolution overlay
-- growth quantification based on addition/removal balance
-- per-section CSV export:
+- loads `.spm`, `.tif`, `.tiff`, `.png`, `.jpg`, `.jpeg`
+- renders AFM height maps with a Gwyddion-style preview path
+- supports colour mapping with auto/fixed display windows and histogram feedback
+- extracts straight line profiles and guided centre-line measurements
+- samples guided cross-sections at calibrated physical spacing
+- measures height, width, peak separation, dip depth, roughness, and height-to-width ratio
+- builds stage-ordered box plots for:
+  - height
+  - width
+  - height-to-width ratio
+- exports CSV files for:
   - guided results
   - line profile
   - stage box plots
-  - growth model simulation
+  - growth model
   - growth quantification
+- runs a guided growth simulation from ordered start/end references
+- uses a persisted supervised learning layer to nudge the growth fit over time as more guided examples are added locally
+
+## Calibration
+
+- raw AFM files such as `.spm` carry physical scan calibration directly
+- processed image files such as `.tiff` try to inherit calibration from a sibling raw AFM file with the same basename
+- if no matching raw calibration source exists, the app falls back to image-based defaults
+
+This matters because all profile distances, corridor widths, and guided measurements are reported in physical units, not just pixels.
+
+## Growth Model
+
+The current desktop workflow focuses the simulation on the guided piecrust region:
+
+- choose ordered reference files
+- choose a start reference
+- choose an end reference
+- run polynomial surface evolution across the ordered references
+- blend that evolution with a supervised bimodal growth model trained from accumulated guided examples stored locally
+
+The growth view is profile-first, so the tab focuses on the evolving guided morphology rather than unrelated full-image background.
+
+## Stage Statistics
+
+The stage export includes per-stage summary values:
+
+- `height_mean_nm`
+- `height_std_nm`
+- `width_mean_nm`
+- `width_std_nm`
+- `height_to_width_ratio_mean`
+- `height_to_width_ratio_std`
 
 ## Build
 
@@ -39,42 +69,27 @@ cd piecrust-analyser-csharp
 DOTNET_CLI_HOME=/tmp dotnet run
 ```
 
-## Notes
+## GitHub Releases
 
-- The current desktop version is designed to be faster by moving the core numeric analysis to C# arrays and cached bitmap rendering.
-- The React analyser remains untouched in `my-app` while this C# port is developed in parallel.
-
-## GitHub distribution
-
-When this folder is pushed as its own GitHub repository, the workflow in:
+This repository contains a GitHub Actions workflow at:
 
 - `.github/workflows/pie-crust-analyser-desktop.yml`
 
-builds downloadable desktop releases for:
+Tagging a release such as `v1.0.3` builds downloadable desktop artifacts for:
 
 - macOS Apple Silicon
 - macOS Intel
-- Windows
-- Linux
+- Windows x64
+- Linux x64
 
-It produces:
+Release assets are published as ZIP files on GitHub Releases. The macOS ZIP contains `Pie Crust Analyser.app`, which users can move into `Applications`, launch from Spotlight, and pin to the Dock.
 
-- a macOS `.app` bundle named `Pie Crust Analyser.app`
-- self-contained Windows and Linux desktop bundles
-- downloadable ZIP files on GitHub Releases for tags such as `v1.0.0`
+## macOS Note
 
-## macOS note
+The macOS app bundle is packaged correctly for download, but a completely seamless first-run experience for other users still requires Apple Developer notarization.
 
-The macOS release is distributed as a `.zip` containing `Pie Crust Analyser.app`.
-If macOS reports that the app is damaged or cannot be opened, that is usually a
-Gatekeeper/notarization issue rather than a corrupted download. A fully seamless
-first-run experience on macOS requires Apple Developer signing and notarization.
+If macOS flags the app before notarization, that is usually Gatekeeper behavior rather than a corrupted build.
 
-For non-coders, the simplest flow is:
+## Development Note
 
-1. open the repository `Releases` page
-2. download the ZIP that matches the operating system
-3. unzip it
-4. launch `Pie Crust Analyser`
-
-No local .NET SDK install is required for these self-contained release builds.
+The React analyser remains untouched in `my-app`. This Avalonia/.NET desktop app is the actively packaged desktop version.
