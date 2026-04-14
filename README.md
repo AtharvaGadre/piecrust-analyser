@@ -75,13 +75,13 @@ This repository contains a GitHub Actions workflow at:
 
 - `.github/workflows/pie-crust-analyser-desktop.yml`
 
-Tagging a release such as `v1.0.3` builds downloadable desktop artifacts for:
+Tagging a release such as `v1.0.5` builds downloadable desktop artifacts for:
 
 - macOS Apple Silicon
 - Windows x64
 - Linux x64
 
-The workflow also attempts a macOS Intel build. If GitHub's Intel macOS runner is unavailable, the release still publishes the Apple Silicon, Windows, and Linux downloads instead of failing the whole release.
+The workflow also attempts a macOS Intel build in a separate optional job. If GitHub's Intel macOS runner is unavailable, the release still publishes the Apple Silicon, Windows, and Linux downloads instead of disappearing entirely.
 
 Release assets are published as ZIP files on GitHub Releases. The macOS ZIP contains `Pie Crust Analyser.app`, which users can move into `Applications`, launch from Spotlight, and pin to the Dock.
 
