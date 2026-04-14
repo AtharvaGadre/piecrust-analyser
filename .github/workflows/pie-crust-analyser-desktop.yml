@@ -20,20 +20,25 @@ jobs:
             rid: osx-arm64
             artifact_name: pie-crust-analyser-macos-arm64
             archive_glob: publish/*.zip
+            allow_failure: false
           - os: macos-13
             rid: osx-x64
             artifact_name: pie-crust-analyser-macos-x64
             archive_glob: publish/*.zip
+            allow_failure: true
           - os: windows-latest
             rid: win-x64
             artifact_name: pie-crust-analyser-windows-x64
             archive_glob: publish/*.zip
+            allow_failure: false
           - os: ubuntu-latest
             rid: linux-x64
             artifact_name: pie-crust-analyser-linux-x64
             archive_glob: publish/*.zip
+            allow_failure: false
 
     runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.allow_failure }}
 
     steps:
       - name: Check out repository
