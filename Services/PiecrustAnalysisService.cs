@@ -9,11 +9,11 @@ public sealed class PiecrustAnalysisService
 
     public IReadOnlyList<PlotPoint> BuildLineProfile(PiecrustFileState file)
     {
-        var sourceData = file.DisplayHeightData.Length > 0
-            ? file.DisplayHeightData
+        var sourceData = file.HeightData.Length > 0
+            ? file.HeightData
             : file.RawHeightData.Length > 0
                 ? file.RawHeightData
-                : file.HeightData;
+                : file.DisplayHeightData;
         if (file.ProfileLine.Count < 2 || sourceData.Length == 0) return Array.Empty<PlotPoint>();
         var p1 = file.ProfileLine[0];
         var p2 = file.ProfileLine[1];
@@ -73,15 +73,83 @@ public sealed class PiecrustAnalysisService
         return profile;
     }
 
+    public EquationDiscoveryProfileInput? BuildEquationDiscoveryProfileInput(PiecrustFileState file)
+    {
+        if (!HasUsableGuide(file) || file.HeightData.Length == 0) return null;
+        var sampled = StatisticsAndGeometry.SampleCurveAtPhysicalInterval(file.GuidePoints, 1.0, file.NmPerPixel);
+        if (sampled.Count < 24) return null;
+
+        var xNm = new double[sampled.Count];
+        var yNm = new double[sampled.Count];
+        var sNm = new double[sampled.Count];
+        var zNm = new double[sampled.Count];
+        var bandHalfWidthPx = Math.Max(0.75, Math.Min(6.0, file.GuideCorridorWidthNm / Math.Max(1e-9, file.NmPerPixel) * 0.12));
+        var bandSamples = 7;
+
+        for (var i = 0; i < sampled.Count; i++)
+        {
+            var point = sampled[i].Point;
+            var tangent = StatisticsAndGeometry.GetCurveTangent(sampled, i);
+            var normal = new PointD(-tangent.Y, tangent.X);
+            double weightedSum = 0;
+            double weightSum = 0;
+            for (var sample = 0; sample < bandSamples; sample++)
+            {
+                var frac = bandSamples == 1 ? 0 : sample / (double)(bandSamples - 1) * 2 - 1;
+                var offset = frac * bandHalfWidthPx;
+                var sigma = Math.Max(0.35, bandHalfWidthPx * 0.65);
+                var weight = Math.Exp(-(offset * offset) / (2 * sigma * sigma));
+                weightedSum += StatisticsAndGeometry.BilinearClamped(
+                    file.HeightData,
+                    file.PixelWidth,
+                    file.PixelHeight,
+                    point.X + normal.X * offset,
+                    point.Y + normal.Y * offset) * weight;
+                weightSum += weight;
+            }
+
+            xNm[i] = point.X * file.NmPerPixel;
+            yNm[i] = point.Y * file.NmPerPixel;
+            sNm[i] = sampled[i].ArcNm;
+            zNm[i] = weightSum > 0 ? weightedSum / weightSum : StatisticsAndGeometry.BilinearClamped(file.HeightData, file.PixelWidth, file.PixelHeight, point.X, point.Y);
+        }
+
+        var summary = file.GuidedSummary;
+        var compromise = BuildGrowthQuantification(new[] { file }, file)?.CompromiseRatio ?? 0;
+        return new EquationDiscoveryProfileInput
+        {
+            FileName = file.Name,
+            FilePath = file.FilePath,
+            Stage = file.Stage,
+            ConditionType = file.ConditionType,
+            Unit = file.Unit,
+            DoseUgPerMl = file.AntibioticDoseUgPerMl,
+            ScanSizeNm = file.ScanSizeNm,
+            NmPerPixel = file.NmPerPixel,
+            MeanHeightNm = summary?.MeanHeightNm ?? 0,
+            MeanWidthNm = summary?.MeanWidthNm ?? 0,
+            HeightToWidthRatio = summary?.HeightToWidthRatio ?? 0,
+            RoughnessNm = summary?.RoughnessNm ?? 0,
+            PeakSeparationNm = summary?.PeakSeparationNm ?? 0,
+            DipDepthNm = summary?.DipDepthNm ?? 0,
+            CompromiseRatio = compromise,
+            XNm = xNm,
+            YNm = yNm,
+            SNm = sNm,
+            ZNm = zNm
+        };
+    }
+
     public GuidedSummary? ExtractGuidedSummary(PiecrustFileState file)
     {
         if (!file.UseManualGuide || !file.GuideLineFinished || file.GuidePoints.Count < 2 || file.HeightData.Length == 0) return null;
         var sampled = StatisticsAndGeometry.SampleCurveAtPhysicalInterval(file.GuidePoints, 1.0, file.NmPerPixel);
         if (sampled.Count < 2) return null;
 
-        var corridorHalfWidthPx = Math.Max(2.0, file.GuideCorridorWidthNm / Math.Max(1e-9, file.NmPerPixel) / 2.0);
+        var corridorHalfWidthPx = GetGuideProfileHalfWidthPx(file);
         var widths = new List<double>();
         var heights = new List<double>();
+        var ratios = new List<double>();
         var prominences = new List<double>();
         var curvatures = new List<double>();
         var leftPeaks = new List<double>();
@@ -129,6 +197,7 @@ public sealed class PiecrustAnalysisService
             }
             widths.Add(width);
             heights.Add(best.Height);
+            ratios.Add(best.Height / Math.Max(1e-9, width));
             prominences.Add(best.Height);
             metrics.Add(new GuidedMetric { ArcNm = sampled[i].ArcNm, WidthNm = width, HeightNm = best.Height, Valid = true });
         }
@@ -138,6 +207,7 @@ public sealed class PiecrustAnalysisService
 
         var widthSummary = StatisticsAndGeometry.Summarise(widths);
         var heightSummary = StatisticsAndGeometry.Summarise(heights);
+        var ratioSummary = StatisticsAndGeometry.Summarise(ratios);
         if (widthSummary is null || heightSummary is null) return null;
 
         var meanProm = StatisticsAndGeometry.Mean(prominences);
@@ -160,9 +230,10 @@ public sealed class PiecrustAnalysisService
             PeakSeparationNm = peakSeparation,
             DipDepthNm = dipDepth,
             BimodalWeight = peakSeparation > 0 ? 1 : 0,
-            HeightToWidthRatio = heightSummary.Mean / Math.Max(1e-9, widthSummary.Mean),
+            HeightToWidthRatio = ratioSummary?.Mean ?? heightSummary.Mean / Math.Max(1e-9, widthSummary.Mean),
             WidthSummary = widthSummary,
-            HeightSummary = heightSummary
+            HeightSummary = heightSummary,
+            HeightWidthRatioSummary = ratioSummary
         };
     }
 
@@ -248,27 +319,23 @@ public sealed class PiecrustAnalysisService
     public IReadOnlyList<BoxPlotDataset> BuildHeightBoxPlots(IEnumerable<PiecrustFileState> files)
     {
         var output = new List<BoxPlotDataset>();
-        var stageColors = new Dictionary<string, string>
+        foreach (var file in OrderFilesForPerImageBoxPlots(files))
         {
-            ["early"] = "#4a8a4a",
-            ["middle"] = "#8a8a4a",
-            ["late"] = "#8a4a4a"
-        };
+            var summary = file.GuidedSummary;
+            var stats = summary?.HeightSummary;
+            if (stats is null || stats.Count == 0) continue;
 
-        foreach (var stage in StageOrder)
-        {
-            var stageFiles = files
-                .Where(f => string.Equals(f.Stage, stage, StringComparison.OrdinalIgnoreCase) && f.GuidedSummary is not null)
-                .ToArray();
-            var values = stageFiles
-                .Select(file => file.GuidedSummary!.MeanHeightNm)
-                .Where(double.IsFinite)
-                .ToArray();
-
-            var stats = StatisticsAndGeometry.Summarise(values);
-            if (stats is null) continue;
-            var (meanMarker, meanError) = BuildStageUncertainty(stageFiles, file => file.GuidedSummary!.MeanHeightNm, file => file.GuidedSummary!.HeightSemNm);
-            output.Add(new BoxPlotDataset { Label = stage, Stats = stats, Color = stageColors[stage], MeanMarker = meanMarker, MeanError = meanError });
+            output.Add(new BoxPlotDataset
+            {
+                Label = file.SequenceOrder.ToString(),
+                FileName = file.Name,
+                Stage = file.Stage,
+                SequenceOrder = file.SequenceOrder,
+                Stats = stats,
+                Color = GetStageColor(file.Stage, "#c17832"),
+                MeanMarker = summary!.MeanHeightNm,
+                MeanError = summary.HeightSemNm
+            });
         }
         return output;
     }
@@ -276,27 +343,23 @@ public sealed class PiecrustAnalysisService
     public IReadOnlyList<BoxPlotDataset> BuildWidthBoxPlots(IEnumerable<PiecrustFileState> files)
     {
         var output = new List<BoxPlotDataset>();
-        var stageColors = new Dictionary<string, string>
+        foreach (var file in OrderFilesForPerImageBoxPlots(files))
         {
-            ["early"] = "#6a7f4b",
-            ["middle"] = "#aa7a3c",
-            ["late"] = "#8c4d3f"
-        };
+            var summary = file.GuidedSummary;
+            var stats = summary?.WidthSummary;
+            if (stats is null || stats.Count == 0) continue;
 
-        foreach (var stage in StageOrder)
-        {
-            var stageFiles = files
-                .Where(f => string.Equals(f.Stage, stage, StringComparison.OrdinalIgnoreCase) && f.GuidedSummary is not null)
-                .ToArray();
-            var values = stageFiles
-                .Select(file => file.GuidedSummary!.MeanWidthNm)
-                .Where(double.IsFinite)
-                .ToArray();
-
-            var stats = StatisticsAndGeometry.Summarise(values);
-            if (stats is null) continue;
-            var (meanMarker, meanError) = BuildStageUncertainty(stageFiles, file => file.GuidedSummary!.MeanWidthNm, file => file.GuidedSummary!.WidthSemNm);
-            output.Add(new BoxPlotDataset { Label = stage, Stats = stats, Color = stageColors[stage], MeanMarker = meanMarker, MeanError = meanError });
+            output.Add(new BoxPlotDataset
+            {
+                Label = file.SequenceOrder.ToString(),
+                FileName = file.Name,
+                Stage = file.Stage,
+                SequenceOrder = file.SequenceOrder,
+                Stats = stats,
+                Color = GetStageColor(file.Stage, "#c17832"),
+                MeanMarker = summary!.MeanWidthNm,
+                MeanError = summary.WidthSemNm
+            });
         }
         return output;
     }
@@ -304,27 +367,28 @@ public sealed class PiecrustAnalysisService
     public IReadOnlyList<BoxPlotDataset> BuildHeightWidthRatioBoxPlots(IEnumerable<PiecrustFileState> files)
     {
         var output = new List<BoxPlotDataset>();
-        var stageColors = new Dictionary<string, string>
+        foreach (var file in OrderFilesForPerImageBoxPlots(files))
         {
-            ["early"] = "#6b9358",
-            ["middle"] = "#bf8741",
-            ["late"] = "#9d5b4d"
-        };
+            var summary = file.GuidedSummary;
+            var stats = summary?.HeightWidthRatioSummary
+                ?? StatisticsAndGeometry.Summarise(file.GuidedMetrics
+                    .Where(metric => metric.Valid && metric.WidthNm > 1e-9)
+                    .Select(metric => metric.HeightNm / Math.Max(1e-9, metric.WidthNm))
+                    .Where(double.IsFinite)
+                    .ToArray());
+            if (stats is null || stats.Count == 0) continue;
 
-        foreach (var stage in StageOrder)
-        {
-            var stageFiles = files
-                .Where(f => string.Equals(f.Stage, stage, StringComparison.OrdinalIgnoreCase) && f.GuidedSummary is not null)
-                .ToArray();
-            var values = stageFiles
-                .Select(file => file.GuidedSummary!.HeightToWidthRatio)
-                .Where(double.IsFinite)
-                .ToArray();
-
-            var stats = StatisticsAndGeometry.Summarise(values);
-            if (stats is null) continue;
-            var (meanMarker, meanError) = BuildStageUncertainty(stageFiles, file => file.GuidedSummary!.HeightToWidthRatio, _ => 0);
-            output.Add(new BoxPlotDataset { Label = stage, Stats = stats, Color = stageColors[stage], MeanMarker = meanMarker, MeanError = meanError });
+            output.Add(new BoxPlotDataset
+            {
+                Label = file.SequenceOrder.ToString(),
+                FileName = file.Name,
+                Stage = file.Stage,
+                SequenceOrder = file.SequenceOrder,
+                Stats = stats,
+                Color = GetStageColor(file.Stage, "#c17832"),
+                MeanMarker = summary!.HeightToWidthRatio,
+                MeanError = stats.StandardError
+            });
         }
         return output;
     }
@@ -619,6 +683,65 @@ public sealed class PiecrustAnalysisService
         return fitted
             .Select((value, index) => new PlotPoint(index * scale, Math.Max(0, value)))
             .ToArray();
+    }
+
+    public double[] ExtractCenteredBimodalSimulationParameters(double[] frame, int width, int height, double scanSizeNmX)
+    {
+        var rawProfile = BuildSurfaceCrossSection(frame, width, height, scanSizeNmX);
+        if (rawProfile.Count == 0) return Array.Empty<double>();
+
+        var values = rawProfile.Select(point => point.Y).ToArray();
+        var smoothed = StatisticsAndGeometry.MovingGaussianSmooth(values, 3);
+        var corrected = ShiftToZero(BaselineCorrect(smoothed));
+        if (corrected.Length < 8) return Array.Empty<double>();
+
+        var parameters = ExtractDoubleGaussian(corrected);
+        if (parameters.Length < 6) return Array.Empty<double>();
+        var spacingNm = rawProfile.Count > 1 ? rawProfile[^1].X / (rawProfile.Count - 1.0) : 1.0;
+        return
+        [
+            Math.Max(0, parameters[0]),
+            Math.Max(0.5 * spacingNm, Math.Abs(parameters[2]) * spacingNm),
+            Math.Max(0, parameters[3]),
+            Math.Max(0.5 * spacingNm, Math.Abs(parameters[5]) * spacingNm),
+            Math.Max(0, Math.Abs(parameters[4] - parameters[1]) * spacingNm)
+        ];
+    }
+
+    public IReadOnlyList<PlotPoint> BuildCenteredBimodalProfileFromParameters(IReadOnlyList<double> parameters, int count, double scanSizeNmX)
+    {
+        if (parameters.Count < 5 || count <= 0) return Array.Empty<PlotPoint>();
+        var amplitudeLeft = Math.Max(0, parameters[0]);
+        var sigmaLeftNm = Math.Max(1e-6, Math.Abs(parameters[1]));
+        var amplitudeRight = Math.Max(0, parameters[2]);
+        var sigmaRightNm = Math.Max(1e-6, Math.Abs(parameters[3]));
+        var separationNm = Math.Max(0, Math.Abs(parameters[4]));
+        var centerNm = scanSizeNmX / 2.0;
+        var leftCenterNm = centerNm - separationNm / 2.0;
+        var rightCenterNm = centerNm + separationNm / 2.0;
+        var points = new PlotPoint[count];
+        for (var i = 0; i < count; i++)
+        {
+            var sNm = count <= 1 ? 0 : i * scanSizeNmX / (count - 1.0);
+            var left = amplitudeLeft * Math.Exp(-Math.Pow(sNm - leftCenterNm, 2) / (2 * sigmaLeftNm * sigmaLeftNm));
+            var right = amplitudeRight * Math.Exp(-Math.Pow(sNm - rightCenterNm, 2) / (2 * sigmaRightNm * sigmaRightNm));
+            points[i] = new PlotPoint(sNm, Math.Max(0, left + right));
+        }
+
+        return points;
+    }
+
+    public double[] FitPolynomialCurve(IReadOnlyList<double> positions, IReadOnlyList<double> values, int degree)
+    {
+        if (positions.Count == 0 || values.Count == 0 || positions.Count != values.Count) return Array.Empty<double>();
+        degree = Math.Clamp(degree, 1, Math.Max(1, positions.Count - 1));
+        var projector = BuildPolynomialProjector(positions, degree);
+        return Multiply(projector, values);
+    }
+
+    public double EvaluatePolynomialCurve(IReadOnlyList<double> coefficients, double position)
+    {
+        return EvaluatePolynomial(coefficients, position);
     }
 
     public double[] BuildSimulationProfile(PiecrustFileState startFile, PiecrustFileState endFile, double progress)
@@ -1136,6 +1259,29 @@ public sealed class PiecrustAnalysisService
         var withinSem = withinRms / Math.Sqrt(Math.Max(1, stageFiles.Count));
         var combined = Math.Sqrt(betweenSem * betweenSem + withinSem * withinSem);
         return (stageMean, combined);
+    }
+
+    private static IReadOnlyList<PiecrustFileState> OrderFilesForPerImageBoxPlots(IEnumerable<PiecrustFileState> files) =>
+        files
+            .Where(file => file.GuidedSummary is not null)
+            .OrderBy(file => file.SequenceOrder)
+            .ThenBy(file => Array.IndexOf(StageOrder, (file.Stage ?? string.Empty).ToLowerInvariant()))
+            .ThenBy(file => file.Name, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+    private static string GetStageColor(string stage, string fallback) =>
+        stage.ToLowerInvariant() switch
+        {
+            "early" => "#6b9358",
+            "middle" => "#bf8741",
+            "late" => "#9d5b4d",
+            _ => fallback
+        };
+
+    private static double GetGuideProfileHalfWidthPx(PiecrustFileState file, double widthExpansionFraction = 0.10)
+    {
+        var expandedWidthNm = file.GuideCorridorWidthNm * (1.0 + widthExpansionFraction);
+        return Math.Max(2.0, expandedWidthNm / Math.Max(1e-9, file.NmPerPixel) / 2.0);
     }
 
     private static bool HasUsableGuide(PiecrustFileState file) => file.UseManualGuide && file.GuideLineFinished && file.GuidePoints.Count >= 2;

@@ -17,10 +17,13 @@ public sealed partial class MainWindowViewModel : ViewModelBase
     private readonly HeightMapDisplayService _heightMapDisplay = new();
     private readonly PiecrustAnalysisService _analysis = new();
     private readonly SupervisedGrowthLearningService _supervisedGrowthLearning = new();
+    private readonly EquationDiscoveryService _equationDiscovery = new();
     private readonly SessionPersistenceService _sessionPersistence = new();
     private readonly DispatcherTimer _simulationTimer;
     private SurfaceSimulationResult? _surfaceSimulationCache;
     private SupervisedGrowthModel? _supervisedGrowthModel;
+    private EquationDiscoveryResult? _equationDiscoveryResult;
+    private IReadOnlyList<SimulationEquationCandidate> _simulationEquationCandidates = Array.Empty<SimulationEquationCandidate>();
     private bool _suspendSessionPersistence;
     private bool _syncingSelectedDisplayControls;
 
@@ -91,6 +94,20 @@ public sealed partial class MainWindowViewModel : ViewModelBase
     [ObservableProperty] private string simulationPlotLegendText = "Dotted = evolving cross-section | Solid = bimodal Gaussian fit";
     [ObservableProperty] private double simulationPlotFixedYMin = double.NaN;
     [ObservableProperty] private double simulationPlotFixedYMax = double.NaN;
+    [ObservableProperty] private string equationDiscoveryStatusText = "Use guided, stage-labelled profiles to discover a family of pseudo-time progression equations.";
+    [ObservableProperty] private string equationDiscoveryMetaText = "Pseudo-time tau is an ordered latent progression variable derived from stage labels, not real clock time.";
+    [ObservableProperty] private string equationDiscoveryStageMappingText = "Stage anchors: early = 0.00, middle = 0.50, late = 1.00";
+    [ObservableProperty] private string equationDiscoveryProfileModeText = "Current reduced model: z(s, tau), where s is aligned centreline position extracted from the original x-y-z AFM surface.";
+    [ObservableProperty] private string equationDiscoveryOverlayLegendText = "Stage colours: Early = green, Middle = amber, Late = red. Solid lines = observed AFM stage profiles z(s). Dashed lines = reconstructed z(s, tau) profiles from the top-ranked candidate at the matching stage anchors.";
+    [ObservableProperty] private string equationDiscoveryProgressionLegendText = "Reconstructed pseudo-time progression of z(s, tau): the colours move from green near Early (tau≈0), through amber near Middle, toward red near Late (tau≈1).";
+    [ObservableProperty] private string equationDiscoveryTermGuideText = "Term guide: z = AFM height, s = aligned centreline position from x-y-z AFM data, dz/ds = slope, d2z/ds2 = curvature, d3z/ds3 and d4z/ds4 = higher-order shape change, tau = latent growth progression rather than real time.";
+    [ObservableProperty] private string equationDiscoveryXAxisLabel = "Aligned centreline position s [nm]";
+    [ObservableProperty] private string equationDiscoveryYAxisLabel = "Height z [nm]";
+    [ObservableProperty] private IReadOnlyList<EquationDiscoveryStageProfile> equationDiscoveryStageProfiles = Array.Empty<EquationDiscoveryStageProfile>();
+    [ObservableProperty] private IReadOnlyList<EquationTermExplanation> equationTermExplanations = Array.Empty<EquationTermExplanation>();
+    [ObservableProperty] private IReadOnlyList<EquationCandidateResult> equationFamily = Array.Empty<EquationCandidateResult>();
+    [ObservableProperty] private IReadOnlyList<PolylineSeries> equationOverlaySeries = Array.Empty<PolylineSeries>();
+    [ObservableProperty] private IReadOnlyList<PolylineSeries> equationProgressionSeries = Array.Empty<PolylineSeries>();
 
     public MainWindowViewModel()
     {
@@ -99,6 +116,17 @@ public sealed partial class MainWindowViewModel : ViewModelBase
             Interval = TimeSpan.FromMilliseconds(140)
         };
         _simulationTimer.Tick += OnSimulationTick;
+    }
+
+    private sealed class SimulationEquationCandidate
+    {
+        public required EquationCandidateResult Display { get; init; }
+        public required int Degree { get; init; }
+        public required double[] LeftAmplitudeCoefficients { get; init; }
+        public required double[] LeftSigmaCoefficients { get; init; }
+        public required double[] RightAmplitudeCoefficients { get; init; }
+        public required double[] RightSigmaCoefficients { get; init; }
+        public required double[] SeparationCoefficients { get; init; }
     }
 
     public async Task InitializeAsync()
@@ -167,6 +195,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase
 
     public async Task LoadFilesAsync(IEnumerable<string> paths)
     {
+        ClearEquationDiscoveryResults();
         foreach (var path in paths.Where(File.Exists))
         {
             try
@@ -245,6 +274,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase
     public void RemoveSelectedFile()
     {
         if (SelectedFile is null) return;
+        ClearEquationDiscoveryResults();
         var idx = Files.IndexOf(SelectedFile);
         SelectedFile.PropertyChanged -= OnFileStateChanged;
         Files.Remove(SelectedFile);
@@ -256,6 +286,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase
 
     public void AutoNumberFiles()
     {
+        ClearEquationDiscoveryResults();
         for (var i = 0; i < Files.Count; i++)
         {
             Files[i].SequenceOrder = i + 1;
@@ -318,6 +349,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase
     public void ClearGuideLine()
     {
         if (SelectedFile is null) return;
+        ClearEquationDiscoveryResults();
         SelectedFile.GuidePoints.Clear();
         SelectedFile.GuidedMetrics.Clear();
         SelectedFile.GuidedSummary = null;
@@ -355,6 +387,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase
     public void RunGuidedExtraction()
     {
         if (SelectedFile is null) return;
+        ClearEquationDiscoveryResults();
         SyncSelectedFileDisplayMetrics();
         SelectedFile.GuidedSummary = _analysis.ExtractGuidedSummary(SelectedFile);
         RefreshDerivedState();
@@ -437,7 +470,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase
 
             sb.AppendLine();
         }
-        sb.AppendLine("measurement,stage,count,mean,median,q1,q3,whisker_low,whisker_high,sem,stddev");
+        sb.AppendLine("measurement,sequence,stage,file_name,count,mean,median,q1,q3,whisker_low,whisker_high,sem,stddev");
         foreach (var dataset in HeightBoxPlots)
         {
             AppendBoxPlotRow(sb, "height_nm", dataset);
@@ -523,6 +556,160 @@ public sealed partial class MainWindowViewModel : ViewModelBase
         return sb.ToString();
     }
 
+    public async Task DiscoverGrowthEquationsAsync()
+    {
+        var profileInputs = Files
+            .Select(file => _analysis.BuildEquationDiscoveryProfileInput(file))
+            .Where(input => input is not null)
+            .Cast<EquationDiscoveryProfileInput>()
+            .Where(input => !string.IsNullOrWhiteSpace(input.Stage))
+            .ToArray();
+
+        var stageCount = profileInputs
+            .Select(input => input.Stage)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Count();
+
+        if (profileInputs.Length < 2 || stageCount < 2)
+        {
+            ClearEquationDiscoveryResults("Equation discovery needs at least two guided profiles spanning at least two ordered stages.");
+            StatusText = EquationDiscoveryStatusText;
+            return;
+        }
+
+        try
+        {
+            EquationDiscoveryStatusText = $"Discovering pseudo-time growth equations from {profileInputs.Length} guided profile(s)...";
+            EquationDiscoveryMetaText = "Preparing centreline-aligned AFM profiles, conservative derivatives, sparse candidate libraries, and pseudo-time sensitivity checks.";
+            StatusText = EquationDiscoveryStatusText;
+
+            var request = new EquationDiscoveryRequest
+            {
+                SampleId = $"piecrust-session-{DateTime.UtcNow:yyyyMMddHHmmss}",
+                TimeMode = "pseudotime_stage_ordered",
+                ProfileMode = "centerline_arc_length_profile",
+                StageMapping = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["early"] = 0.0,
+                    ["middle"] = 0.5,
+                    ["late"] = 1.0
+                },
+                Options = new EquationDiscoveryOptions
+                {
+                    SpatialGridCount = 220,
+                    BootstrapCount = Math.Clamp(profileInputs.Length * 6, 18, 36),
+                    StageJitter = 0.10,
+                    SampleSpacingNm = 1.0,
+                    DerivativeMode = "savitzky_golay",
+                    SparseBackend = "stlsq"
+                },
+                Files = profileInputs
+            };
+
+            var result = await _equationDiscovery.DiscoverAsync(request).ConfigureAwait(true);
+            if (result is null)
+            {
+                ClearEquationDiscoveryResults("Equation discovery did not return a result for the current guided stage set.");
+                StatusText = EquationDiscoveryStatusText;
+                return;
+            }
+
+            ApplyEquationDiscoveryResult(result);
+            ApplySimulationAlignedEquationFamilyIfAvailable();
+            StatusText = $"Equation discovery complete. Ranked {EquationFamily.Count} pseudo-time candidate equation(s).";
+        }
+        catch (Exception ex)
+        {
+            ClearEquationDiscoveryResults($"Equation discovery failed: {ex.Message}");
+            StatusText = EquationDiscoveryStatusText;
+        }
+    }
+
+    public string BuildEquationDiscoveryJson()
+    {
+        return _equationDiscoveryResult?.RawJson ?? string.Empty;
+    }
+
+    public string BuildEquationDiscoveryCsv()
+    {
+        if (_equationDiscoveryResult is null) return string.Empty;
+
+        var sb = new StringBuilder();
+        sb.AppendLine($"sample_id,{Csv(_equationDiscoveryResult.SampleId)}");
+        sb.AppendLine($"time_mode,{Csv(_equationDiscoveryResult.TimeMode)}");
+        sb.AppendLine($"profile_mode,{Csv(_equationDiscoveryResult.ProfileMode)}");
+        sb.AppendLine($"stage_mapping_mode,{Csv(_equationDiscoveryResult.StageMappingMode)}");
+        sb.AppendLine($"spatial_coordinate_label,{Csv(_equationDiscoveryResult.SpatialCoordinateLabel)}");
+        sb.AppendLine($"height_label,{Csv(_equationDiscoveryResult.HeightLabel)}");
+        sb.AppendLine();
+
+        sb.AppendLine("stage,tau");
+        foreach (var entry in _equationDiscoveryResult.StageMapping.OrderBy(entry => entry.Value))
+        {
+            sb.AppendLine($"{Csv(entry.Key)},{entry.Value.ToString("F4", CultureInfo.InvariantCulture)}");
+        }
+
+        sb.AppendLine();
+        sb.AppendLine("rank,equation,rmse,peak_height_error,width_error,area_error,compromise_consistency,stability_score,complexity_penalty,confidence,pseudotime_sensitivity,bootstrap_support,meta_prior_score,notes");
+        foreach (var candidate in EquationFamily)
+        {
+            sb.AppendLine(string.Join(",",
+                candidate.Rank.ToString(CultureInfo.InvariantCulture),
+                Csv(candidate.Equation),
+                candidate.Rmse.ToString("F6", CultureInfo.InvariantCulture),
+                candidate.PeakHeightError.ToString("F6", CultureInfo.InvariantCulture),
+                candidate.WidthError.ToString("F6", CultureInfo.InvariantCulture),
+                candidate.AreaError.ToString("F6", CultureInfo.InvariantCulture),
+                candidate.CompromiseConsistency.ToString("F6", CultureInfo.InvariantCulture),
+                candidate.StabilityScore.ToString("F6", CultureInfo.InvariantCulture),
+                candidate.ComplexityPenalty.ToString("F6", CultureInfo.InvariantCulture),
+                candidate.Confidence.ToString("F6", CultureInfo.InvariantCulture),
+                candidate.PseudotimeSensitivity.ToString("F6", CultureInfo.InvariantCulture),
+                candidate.BootstrapSupport.ToString("F6", CultureInfo.InvariantCulture),
+                candidate.MetaPriorScore.ToString("F6", CultureInfo.InvariantCulture),
+                Csv(candidate.Notes)));
+        }
+
+        sb.AppendLine();
+        sb.AppendLine("candidate_rank,term,mean,stddev,lower95,upper95");
+        foreach (var candidate in EquationFamily)
+        {
+            foreach (var term in candidate.CoefficientStatistics.OrderBy(entry => entry.Key, StringComparer.OrdinalIgnoreCase))
+            {
+                var stats = term.Value;
+                sb.AppendLine(string.Join(",",
+                    candidate.Rank.ToString(CultureInfo.InvariantCulture),
+                    Csv(term.Key),
+                    stats.Mean.ToString("F6", CultureInfo.InvariantCulture),
+                    stats.StandardDeviation.ToString("F6", CultureInfo.InvariantCulture),
+                    stats.Lower95.ToString("F6", CultureInfo.InvariantCulture),
+                    stats.Upper95.ToString("F6", CultureInfo.InvariantCulture)));
+            }
+        }
+
+        sb.AppendLine();
+        sb.AppendLine("stage,tau,sample_count,mean_height_nm,height_std_nm,mean_width_nm,width_std_nm,mean_area,mean_roughness_nm");
+        foreach (var stage in _equationDiscoveryResult.StageProfiles)
+        {
+            sb.AppendLine(string.Join(",",
+                Csv(stage.Stage),
+                stage.Tau.ToString("F4", CultureInfo.InvariantCulture),
+                stage.SampleCount.ToString(CultureInfo.InvariantCulture),
+                stage.MeanHeightNm.ToString("F6", CultureInfo.InvariantCulture),
+                stage.HeightStdNm.ToString("F6", CultureInfo.InvariantCulture),
+                stage.MeanWidthNm.ToString("F6", CultureInfo.InvariantCulture),
+                stage.WidthStdNm.ToString("F6", CultureInfo.InvariantCulture),
+                stage.MeanArea.ToString("F6", CultureInfo.InvariantCulture),
+                stage.MeanRoughnessNm.ToString("F6", CultureInfo.InvariantCulture)));
+        }
+
+        AppendEquationCurvesCsv(sb, _equationDiscoveryResult.ObservedProfiles);
+        AppendEquationCurvesCsv(sb, _equationDiscoveryResult.ReconstructedProfiles);
+        AppendEquationCurvesCsv(sb, _equationDiscoveryResult.ProgressionProfiles);
+
+        return sb.ToString();
+    }
+
     partial void OnSelectedFileChanged(PiecrustFileState? value)
     {
         SyncSelectedFileDisplayMetrics();
@@ -571,6 +758,652 @@ public sealed partial class MainWindowViewModel : ViewModelBase
         CurrentProfileSeries = profile.Length == 0
             ? Array.Empty<PolylineSeries>()
             : new[] { new PolylineSeries(profile, "#2f2f2f", 1.7) };
+    }
+
+    private void ApplyEquationDiscoveryResult(EquationDiscoveryResult result)
+    {
+        _equationDiscoveryResult = result;
+        EquationDiscoveryStageProfiles = result.StageProfiles
+            .OrderBy(stage => stage.Tau)
+            .ToArray();
+        EquationFamily = result.EquationFamily
+            .OrderBy(candidate => candidate.Rank)
+            .ToArray();
+        EquationDiscoveryStatusText = result.StatusText;
+        EquationDiscoveryMetaText = result.MetaModelSummary;
+        EquationDiscoveryProfileModeText =
+            "Current reduced model: z(s, tau), where s is aligned centreline position extracted from the original x-y-z AFM surface. " +
+            "Tau is a latent progression variable inferred from ordered stage labels, not real time.";
+        EquationDiscoveryStageMappingText = "Pseudo-time anchors: " + string.Join("  |  ",
+            result.StageMapping
+                .OrderBy(entry => entry.Value)
+                .Select(entry => $"{ToStageLabel(entry.Key)} = {entry.Value:F2}"));
+        EquationDiscoveryTermGuideText =
+            "Term guide: z is AFM height, s is aligned centreline position from the original x-y-z AFM surface, dz/ds is the local slope, " +
+            "d2z/ds2 is curvature, d3z/ds3 and d4z/ds4 capture higher-order shape change, and tau is latent growth progression rather than real time.";
+        EquationDiscoveryOverlayLegendText =
+            "Stage colours: Early = green, Middle = amber, Late = red. Solid lines = observed AFM stage profiles z(s). " +
+            "Dashed lines = reconstructed z(s, tau) profiles from the top-ranked candidate at the matching stage anchors.";
+        EquationDiscoveryProgressionLegendText =
+            "Reconstructed pseudo-time progression of z(s, tau): the colours move from green near Early (tau≈0), through amber near Middle, toward red near Late (tau≈1).";
+        EquationDiscoveryXAxisLabel = string.IsNullOrWhiteSpace(result.SpatialCoordinateLabel) ? "Aligned centreline position s [nm]" : result.SpatialCoordinateLabel;
+        EquationDiscoveryYAxisLabel = string.IsNullOrWhiteSpace(result.HeightLabel) ? "Height z [nm]" : result.HeightLabel;
+        EquationTermExplanations = BuildGenericEquationTermExplanations();
+        EquationOverlaySeries = BuildEquationOverlaySeries(result);
+        EquationProgressionSeries = BuildEquationProgressionSeries(result);
+    }
+
+    private void ClearEquationDiscoveryResults(string? status = null)
+    {
+        _equationDiscoveryResult = null;
+        _simulationEquationCandidates = Array.Empty<SimulationEquationCandidate>();
+        EquationDiscoveryStageProfiles = Array.Empty<EquationDiscoveryStageProfile>();
+        EquationFamily = Array.Empty<EquationCandidateResult>();
+        EquationOverlaySeries = Array.Empty<PolylineSeries>();
+        EquationProgressionSeries = Array.Empty<PolylineSeries>();
+        EquationDiscoveryStatusText = status ?? "Use guided, stage-labelled profiles to discover a family of pseudo-time progression equations.";
+        EquationDiscoveryMetaText = "Pseudo-time tau is an ordered latent progression variable derived from stage labels, not real clock time.";
+        EquationDiscoveryStageMappingText = "Stage anchors: early = 0.00, middle = 0.50, late = 1.00";
+        EquationDiscoveryProfileModeText = "Current reduced model: z(s, tau), where s is aligned centreline position extracted from the original x-y-z AFM surface.";
+        EquationDiscoveryOverlayLegendText = "Stage colours: Early = green, Middle = amber, Late = red. Solid lines = observed AFM stage profiles z(s). Dashed lines = reconstructed z(s, tau) profiles from the top-ranked candidate at the matching stage anchors.";
+        EquationDiscoveryProgressionLegendText = "Reconstructed pseudo-time progression of z(s, tau): the colours move from green near Early (tau≈0), through amber near Middle, toward red near Late (tau≈1).";
+        EquationDiscoveryTermGuideText = "Term guide: z is AFM height, s is aligned centreline position from the original x-y-z AFM surface, dz/ds is the local slope, d2z/ds2 is curvature, d3z/ds3 and d4z/ds4 capture higher-order shape change, and tau is latent growth progression rather than real time.";
+        EquationDiscoveryXAxisLabel = "Aligned centreline position s [nm]";
+        EquationDiscoveryYAxisLabel = "Height z [nm]";
+        EquationTermExplanations = BuildGenericEquationTermExplanations();
+    }
+
+    private static IReadOnlyList<PolylineSeries> BuildEquationOverlaySeries(EquationDiscoveryResult result)
+    {
+        var stageColors = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["early"] = "#68a65b",
+            ["middle"] = "#d0a74d",
+            ["late"] = "#cf6a4d"
+        };
+
+        var series = new List<PolylineSeries>();
+        foreach (var curve in result.ObservedProfiles.OrderBy(curve => curve.Tau))
+        {
+            if (curve.Points.Count < 2) continue;
+            var color = stageColors.TryGetValue(curve.Stage, out var stageColor) ? stageColor : "#ead9bf";
+            series.Add(new PolylineSeries(curve.Points.Select(point => point.ToPlotPoint()).ToArray(), color, 2.6, 0.98));
+        }
+
+        foreach (var curve in result.ReconstructedProfiles.OrderBy(curve => curve.Tau))
+        {
+            if (curve.Points.Count < 2) continue;
+            var color = stageColors.TryGetValue(curve.Stage, out var stageColor) ? stageColor : "#fff4d8";
+            series.Add(new PolylineSeries(curve.Points.Select(point => point.ToPlotPoint()).ToArray(), color, 2.0, 0.72, Dashed: true));
+        }
+
+        return series;
+    }
+
+    private static IReadOnlyList<PolylineSeries> BuildEquationProgressionSeries(EquationDiscoveryResult result)
+    {
+        var palette = new[]
+        {
+            "#6da65f",
+            "#92b76d",
+            "#c2b16a",
+            "#d5a55f",
+            "#cf8658",
+            "#c86f50",
+            "#bf5d49"
+        };
+
+        return result.ProgressionProfiles
+            .OrderBy(curve => curve.Tau)
+            .Select((curve, index) => new PolylineSeries(
+                curve.Points.Select(point => point.ToPlotPoint()).ToArray(),
+                palette[Math.Min(index, palette.Length - 1)],
+                1.9,
+                0.98))
+            .ToArray();
+    }
+
+    private void ApplySimulationAlignedEquationFamilyIfAvailable()
+    {
+        var simulation = GetOrBuildSimulationCache();
+        if (simulation is null || simulation.Frames.Count < 3) return;
+
+        var candidates = BuildSimulationEquationCandidates(simulation);
+        if (candidates.Count == 0) return;
+
+        _simulationEquationCandidates = candidates;
+        EquationFamily = candidates.Select(candidate => candidate.Display).ToArray();
+        EquationOverlaySeries = BuildSimulationEquationOverlaySeries(simulation, candidates[0]);
+        EquationProgressionSeries = BuildSimulationEquationProgressionSeries(simulation, candidates[0]);
+        EquationDiscoveryStatusText = "Showing the simulation-aligned bimodal evolution equations derived from the same centered Gaussian trajectory used by the Growth Model tab.";
+        EquationDiscoveryProfileModeText =
+            "Current reduced model: z(s, tau) is represented as a centered bimodal Gaussian whose amplitudes, widths, and peak separation evolve over pseudo-time tau.";
+        EquationDiscoveryMetaText =
+            "The equations listed below are now fit directly to the same bimodal evolution shown in the simulation, so the displayed law matches the solid fitted curve in the Growth Model tab.";
+        EquationDiscoveryOverlayLegendText =
+            "Stage colours: Early = green, Middle = amber, Late = red. Solid lines = centered bimodal profiles extracted from the simulation references. Dashed lines = profiles reconstructed from the parameter-evolution equations at those same pseudo-time anchors.";
+        EquationDiscoveryProgressionLegendText =
+            "Coloured curves show the same centered bimodal Gaussian evolution law used by the Growth Model simulation, expressed here as parameter equations over pseudo-time tau.";
+        EquationDiscoveryTermGuideText =
+            "Bimodal model guide: z(s, tau) is explicitly written as z_L(s, tau) + z_R(s, tau), so the discovered family remains two-peaked across pseudo-time rather than collapsing to a single Gaussian. A_L and A_R are the left and right peak heights, sigma_L and sigma_R are the corresponding Gaussian widths, Delta is the peak-to-peak spacing, s_c is the fixed centred reference position, and tau is latent stage progression rather than real time.";
+        EquationTermExplanations = BuildBimodalEquationTermExplanations();
+    }
+
+    private IReadOnlyList<SimulationEquationCandidate> BuildSimulationEquationCandidates(SurfaceSimulationResult simulation)
+    {
+        var frameRows = new List<(double Tau, double[] Parameters, IReadOnlyList<PlotPoint> Profile)>();
+        for (var i = 0; i < simulation.Frames.Count; i++)
+        {
+            var parameters = _analysis.ExtractCenteredBimodalSimulationParameters(
+                simulation.Frames[i],
+                simulation.Width,
+                simulation.Height,
+                simulation.ScanSizeNmX);
+            if (parameters.Length < 5) return Array.Empty<SimulationEquationCandidate>();
+
+            var profile = _analysis.BuildCenteredBimodalSimulationProfile(
+                simulation.Frames[i],
+                simulation.Width,
+                simulation.Height,
+                simulation.ScanSizeNmX);
+            if (profile.Count < 8) return Array.Empty<SimulationEquationCandidate>();
+
+            frameRows.Add((simulation.FrameProgresses[i], parameters, profile));
+        }
+
+        if (frameRows.Count < 3) return Array.Empty<SimulationEquationCandidate>();
+
+        var maxDegree = Math.Max(1, simulation.PolynomialDegree);
+        var provisional = new List<(SimulationEquationCandidate Candidate, double Score)>();
+        var taus = frameRows.Select(row => row.Tau).ToArray();
+
+        for (var degree = 1; degree <= maxDegree; degree++)
+        {
+            var leftAmplitude = _analysis.FitPolynomialCurve(taus, frameRows.Select(row => row.Parameters[0]).ToArray(), degree);
+            var leftSigma = _analysis.FitPolynomialCurve(taus, frameRows.Select(row => row.Parameters[1]).ToArray(), degree);
+            var rightAmplitude = _analysis.FitPolynomialCurve(taus, frameRows.Select(row => row.Parameters[2]).ToArray(), degree);
+            var rightSigma = _analysis.FitPolynomialCurve(taus, frameRows.Select(row => row.Parameters[3]).ToArray(), degree);
+            var separation = _analysis.FitPolynomialCurve(taus, frameRows.Select(row => row.Parameters[4]).ToArray(), degree);
+            if (leftAmplitude.Length == 0 || leftSigma.Length == 0 || rightAmplitude.Length == 0 || rightSigma.Length == 0 || separation.Length == 0)
+            {
+                continue;
+            }
+
+            double rmse = 0;
+            double peakError = 0;
+            double widthError = 0;
+            double areaError = 0;
+            double compromiseConsistency = 0;
+            var stable = true;
+
+            foreach (var row in frameRows)
+            {
+                var predictedParameters = ClampBimodalParameters(EvaluateSimulationEquationCandidate(
+                    leftAmplitude,
+                    leftSigma,
+                    rightAmplitude,
+                    rightSigma,
+                    separation,
+                    row.Tau));
+                var predictedProfile = _analysis.BuildCenteredBimodalProfileFromParameters(predictedParameters, simulation.Width, simulation.ScanSizeNmX);
+                if (predictedProfile.Count != row.Profile.Count || predictedProfile.Count == 0)
+                {
+                    stable = false;
+                    continue;
+                }
+
+                rmse += ComputeProfileRmse(row.Profile, predictedProfile);
+                peakError += Math.Abs(ComputeProfilePeakHeight(row.Profile) - ComputeProfilePeakHeight(predictedProfile));
+                widthError += Math.Abs(ComputeProfileWidthNm(row.Profile) - ComputeProfileWidthNm(predictedProfile));
+                areaError += Math.Abs(ComputeProfileArea(row.Profile) - ComputeProfileArea(predictedProfile));
+                var dipDelta = Math.Abs(ComputeProfileDipDepthNm(row.Profile) - ComputeProfileDipDepthNm(predictedProfile));
+                compromiseConsistency += Math.Max(0, 1.0 - dipDelta / Math.Max(1.0, ComputeProfilePeakHeight(row.Profile)));
+            }
+
+            var count = Math.Max(1, frameRows.Count);
+            rmse /= count;
+            peakError /= count;
+            widthError /= count;
+            areaError /= count;
+            compromiseConsistency /= count;
+            var stability = stable ? 1.0 : 0.45;
+            var complexity = degree / 3.0;
+            var metaPrior = degree == simulation.PolynomialDegree ? 1.0 : 0.78;
+            var sensitivity = Math.Abs(widthError) / Math.Max(1.0, simulation.ScanSizeNmX);
+            var confidence = Math.Clamp(
+                0.35 * stability +
+                0.22 * (1.0 / (1.0 + rmse)) +
+                0.14 * (1.0 / (1.0 + peakError)) +
+                0.12 * (1.0 / (1.0 + widthError)) +
+                0.07 * (1.0 / (1.0 + areaError / Math.Max(1.0, simulation.ScanSizeNmX))) +
+                0.10 * metaPrior,
+                0.0,
+                1.0);
+
+            var coefficientStats = BuildSimulationCoefficientStatistics(
+                leftAmplitude,
+                leftSigma,
+                rightAmplitude,
+                rightSigma,
+                separation);
+
+            var display = new EquationCandidateResult
+            {
+                Rank = 0,
+                Equation = BuildSimulationEquationText(leftAmplitude, leftSigma, rightAmplitude, rightSigma, separation),
+                ActiveTerms = new[] { "z_L(s,τ)", "z_R(s,τ)", "A_L(τ)", "σ_L(τ)", "A_R(τ)", "σ_R(τ)", "s_L(τ)", "s_R(τ)", "Δ(τ)", "s_c" },
+                Coefficients = coefficientStats.ToDictionary(entry => entry.Key, entry => entry.Value.Mean, StringComparer.OrdinalIgnoreCase),
+                CoefficientStatistics = coefficientStats,
+                Rmse = rmse,
+                PeakHeightError = peakError,
+                WidthError = widthError,
+                AreaError = areaError,
+                CompromiseConsistency = compromiseConsistency,
+                StabilityScore = stability,
+                ComplexityPenalty = complexity,
+                Confidence = confidence,
+                PseudotimeSensitivity = sensitivity,
+                BootstrapSupport = 1.0,
+                MetaPriorScore = metaPrior,
+                Notes =
+                    $"Derived from the same centered bimodal Gaussian trajectory used in Growth Model. " +
+                    $"At every pseudo-time τ the profile is reconstructed as the sum of two Gaussian peaks, while polynomial degree {degree} controls how A_L, σ_L, A_R, σ_R, and Δ evolve."
+            };
+
+            provisional.Add((new SimulationEquationCandidate
+            {
+                Display = display,
+                Degree = degree,
+                LeftAmplitudeCoefficients = leftAmplitude,
+                LeftSigmaCoefficients = leftSigma,
+                RightAmplitudeCoefficients = rightAmplitude,
+                RightSigmaCoefficients = rightSigma,
+                SeparationCoefficients = separation
+            }, rmse + 0.15 * peakError + 0.08 * widthError + 0.04 * areaError - 0.10 * stability - 0.04 * metaPrior));
+        }
+
+        return provisional
+            .OrderBy(entry => entry.Score)
+            .ThenByDescending(entry => entry.Candidate.Display.Confidence)
+            .Select((entry, index) => new SimulationEquationCandidate
+            {
+                Display = new EquationCandidateResult
+                {
+                    Rank = index + 1,
+                    Equation = entry.Candidate.Display.Equation,
+                    ActiveTerms = entry.Candidate.Display.ActiveTerms,
+                    Coefficients = entry.Candidate.Display.Coefficients,
+                    CoefficientStatistics = entry.Candidate.Display.CoefficientStatistics,
+                    Rmse = entry.Candidate.Display.Rmse,
+                    PeakHeightError = entry.Candidate.Display.PeakHeightError,
+                    WidthError = entry.Candidate.Display.WidthError,
+                    AreaError = entry.Candidate.Display.AreaError,
+                    CompromiseConsistency = entry.Candidate.Display.CompromiseConsistency,
+                    StabilityScore = entry.Candidate.Display.StabilityScore,
+                    ComplexityPenalty = entry.Candidate.Display.ComplexityPenalty,
+                    Confidence = entry.Candidate.Display.Confidence,
+                    PseudotimeSensitivity = entry.Candidate.Display.PseudotimeSensitivity,
+                    BootstrapSupport = entry.Candidate.Display.BootstrapSupport,
+                    MetaPriorScore = entry.Candidate.Display.MetaPriorScore,
+                    Notes = entry.Candidate.Display.Notes
+                },
+                Degree = entry.Candidate.Degree,
+                LeftAmplitudeCoefficients = entry.Candidate.LeftAmplitudeCoefficients,
+                LeftSigmaCoefficients = entry.Candidate.LeftSigmaCoefficients,
+                RightAmplitudeCoefficients = entry.Candidate.RightAmplitudeCoefficients,
+                RightSigmaCoefficients = entry.Candidate.RightSigmaCoefficients,
+                SeparationCoefficients = entry.Candidate.SeparationCoefficients
+            })
+            .ToArray();
+    }
+
+    private IReadOnlyList<PolylineSeries> BuildSimulationEquationOverlaySeries(SurfaceSimulationResult simulation, SimulationEquationCandidate candidate)
+    {
+        var stageColors = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["early"] = "#68a65b",
+            ["middle"] = "#d0a74d",
+            ["late"] = "#cf6a4d"
+        };
+
+        var series = new List<PolylineSeries>();
+        for (var i = 0; i < simulation.References.Count && i < simulation.ReferenceSurfaces.Count; i++)
+        {
+            var reference = simulation.References[i];
+            var actual = _analysis.BuildCenteredBimodalSimulationProfile(
+                simulation.ReferenceSurfaces[i],
+                simulation.Width,
+                simulation.Height,
+                simulation.ScanSizeNmX);
+            if (actual.Count < 2) continue;
+
+            var predictedParameters = EvaluateSimulationEquationCandidate(candidate, reference.Position01);
+            var predicted = _analysis.BuildCenteredBimodalProfileFromParameters(predictedParameters, simulation.Width, simulation.ScanSizeNmX);
+            var color = stageColors.TryGetValue(reference.Stage, out var stageColor) ? stageColor : "#ead9bf";
+            series.Add(new PolylineSeries(actual.ToArray(), color, 2.6, 0.98));
+            if (predicted.Count > 1)
+            {
+                series.Add(new PolylineSeries(predicted.ToArray(), color, 2.0, 0.74, Dashed: true));
+            }
+        }
+
+        return series;
+    }
+
+    private IReadOnlyList<PolylineSeries> BuildSimulationEquationProgressionSeries(SurfaceSimulationResult simulation, SimulationEquationCandidate candidate)
+    {
+        var palette = new[]
+        {
+            "#6da65f",
+            "#92b76d",
+            "#c2b16a",
+            "#d5a55f",
+            "#cf8658",
+            "#c86f50",
+            "#bf5d49"
+        };
+
+        return Enumerable.Range(0, 7)
+            .Select(index => index / 6.0)
+            .Select((tau, index) =>
+            {
+                var parameters = EvaluateSimulationEquationCandidate(candidate, tau);
+                var profile = _analysis.BuildCenteredBimodalProfileFromParameters(parameters, simulation.Width, simulation.ScanSizeNmX);
+                return new PolylineSeries(profile.ToArray(), palette[Math.Min(index, palette.Length - 1)], 1.9, 0.98);
+            })
+            .Where(series => series.Points.Count > 1)
+            .ToArray();
+    }
+
+    private double[] EvaluateSimulationEquationCandidate(SimulationEquationCandidate candidate, double tau)
+    {
+        return EvaluateSimulationEquationCandidate(
+            candidate.LeftAmplitudeCoefficients,
+            candidate.LeftSigmaCoefficients,
+            candidate.RightAmplitudeCoefficients,
+            candidate.RightSigmaCoefficients,
+            candidate.SeparationCoefficients,
+            tau);
+    }
+
+    private double[] EvaluateSimulationEquationCandidate(
+        IReadOnlyList<double> leftAmplitude,
+        IReadOnlyList<double> leftSigma,
+        IReadOnlyList<double> rightAmplitude,
+        IReadOnlyList<double> rightSigma,
+        IReadOnlyList<double> separation,
+        double tau)
+    {
+        return ClampBimodalParameters(
+        [
+            _analysis.EvaluatePolynomialCurve(leftAmplitude, tau),
+            _analysis.EvaluatePolynomialCurve(leftSigma, tau),
+            _analysis.EvaluatePolynomialCurve(rightAmplitude, tau),
+            _analysis.EvaluatePolynomialCurve(rightSigma, tau),
+            _analysis.EvaluatePolynomialCurve(separation, tau)
+        ]);
+    }
+
+    private static double[] ClampBimodalParameters(IReadOnlyList<double> parameters)
+    {
+        if (parameters.Count < 5) return Array.Empty<double>();
+        return
+        [
+            Math.Max(0, parameters[0]),
+            Math.Max(1e-3, Math.Abs(parameters[1])),
+            Math.Max(0, parameters[2]),
+            Math.Max(1e-3, Math.Abs(parameters[3])),
+            Math.Max(0, Math.Abs(parameters[4]))
+        ];
+    }
+
+    private static string BuildSimulationEquationText(
+        IReadOnlyList<double> leftAmplitude,
+        IReadOnlyList<double> leftSigma,
+        IReadOnlyList<double> rightAmplitude,
+        IReadOnlyList<double> rightSigma,
+        IReadOnlyList<double> separation)
+    {
+        return string.Join(Environment.NewLine,
+            "z(s, τ) = z_L(s, τ) + z_R(s, τ)",
+            "z_L(s, τ) = A_L(τ) · exp(-((s - s_L(τ))²) / (2σ_L(τ)²))",
+            "z_R(s, τ) = A_R(τ) · exp(-((s - s_R(τ))²) / (2σ_R(τ)²))",
+            "s_L(τ) = s_c - Δ(τ)/2",
+            "s_R(τ) = s_c + Δ(τ)/2",
+            $"A_L(τ) = {BuildPolynomialText(leftAmplitude)}",
+            $"σ_L(τ) = {BuildPolynomialText(leftSigma)}",
+            $"A_R(τ) = {BuildPolynomialText(rightAmplitude)}",
+            $"σ_R(τ) = {BuildPolynomialText(rightSigma)}",
+            $"Δ(τ) = {BuildPolynomialText(separation)}");
+    }
+
+    private static string BuildPolynomialText(IReadOnlyList<double> coefficients)
+    {
+        if (coefficients.Count == 0) return "0";
+        var parts = new List<string>();
+        for (var i = 0; i < coefficients.Count; i++)
+        {
+            var coefficient = coefficients[i];
+            if (Math.Abs(coefficient) < 1e-9) continue;
+            var magnitude = Math.Abs(coefficient).ToString("F4", CultureInfo.InvariantCulture).TrimEnd('0').TrimEnd('.');
+            var basis = i switch
+            {
+                0 => string.Empty,
+                1 => "τ",
+                _ => $"τ{ToSuperscript(i)}"
+            };
+            var fragment = string.IsNullOrEmpty(basis) ? magnitude : $"{magnitude}·{basis}";
+            parts.Add((coefficient < 0 ? "- " : "+ ") + fragment);
+        }
+
+        if (parts.Count == 0) return "0";
+        return string.Join(" ", parts).TrimStart('+', ' ');
+    }
+
+    private static string ToSuperscript(int value)
+    {
+        var digits = value.ToString(CultureInfo.InvariantCulture);
+        var output = new StringBuilder(digits.Length);
+        foreach (var digit in digits)
+        {
+            output.Append(digit switch
+            {
+                '0' => '⁰',
+                '1' => '¹',
+                '2' => '²',
+                '3' => '³',
+                '4' => '⁴',
+                '5' => '⁵',
+                '6' => '⁶',
+                '7' => '⁷',
+                '8' => '⁸',
+                '9' => '⁹',
+                '-' => '⁻',
+                _ => digit
+            });
+        }
+
+        return output.ToString();
+    }
+
+    private static IReadOnlyList<EquationTermExplanation> BuildGenericEquationTermExplanations() =>
+    [
+        new EquationTermExplanation
+        {
+            Symbol = "z(s, τ)",
+            Meaning = "Height profile over pseudo-time",
+            Detail = "The discovered law evolves AFM height z along the aligned centreline coordinate s as latent growth progression τ increases."
+        },
+        new EquationTermExplanation
+        {
+            Symbol = "s",
+            Meaning = "Aligned centreline position",
+            Detail = "Distance along the guided piecrust centreline extracted from the original x-y-z AFM surface."
+        },
+        new EquationTermExplanation
+        {
+            Symbol = "τ",
+            Meaning = "Pseudo-time / progression variable",
+            Detail = "Ordered stage progression anchor, not real clock time."
+        },
+        new EquationTermExplanation
+        {
+            Symbol = "dz/ds",
+            Meaning = "Local slope",
+            Detail = "How fast the profile height changes along the aligned centreline."
+        },
+        new EquationTermExplanation
+        {
+            Symbol = "d²z/ds²",
+            Meaning = "Curvature",
+            Detail = "How sharply the profile bends; positive and negative values indicate different local shape changes."
+        },
+        new EquationTermExplanation
+        {
+            Symbol = "d³z/ds³, d⁴z/ds⁴",
+            Meaning = "Higher-order shape terms",
+            Detail = "Used only in the reduced discovery mode to capture sharper rim formation and smoothing behaviour."
+        }
+    ];
+
+    private static IReadOnlyList<EquationTermExplanation> BuildBimodalEquationTermExplanations() =>
+    [
+        new EquationTermExplanation
+        {
+            Symbol = "z(s, τ)",
+            Meaning = "Total reconstructed piecrust profile",
+            Detail = "This is explicitly the sum of two peaks, z_L + z_R, so the discovered evolution remains bimodal."
+        },
+        new EquationTermExplanation
+        {
+            Symbol = "z_L(s, τ), z_R(s, τ)",
+            Meaning = "Left and right Gaussian rim profiles",
+            Detail = "Each side of the piecrust is modelled as its own Gaussian contribution before the two are added together."
+        },
+        new EquationTermExplanation
+        {
+            Symbol = "A_L(τ), A_R(τ)",
+            Meaning = "Left and right peak heights",
+            Detail = "These polynomial laws control how tall each piecrust rim becomes as progression increases."
+        },
+        new EquationTermExplanation
+        {
+            Symbol = "σ_L(τ), σ_R(τ)",
+            Meaning = "Left and right peak widths",
+            Detail = "These determine how broad or narrow each Gaussian rim is at a given pseudo-time."
+        },
+        new EquationTermExplanation
+        {
+            Symbol = "s_L(τ), s_R(τ)",
+            Meaning = "Left and right peak centres",
+            Detail = "These are the two peak positions. They are separated symmetrically around the centred reference position s_c."
+        },
+        new EquationTermExplanation
+        {
+            Symbol = "Δ(τ)",
+            Meaning = "Peak-to-peak separation",
+            Detail = "Controls how far apart the two bimodal rims are at each pseudo-time."
+        },
+        new EquationTermExplanation
+        {
+            Symbol = "s_c",
+            Meaning = "Centred reference position",
+            Detail = "The fixed aligned centre of the guided profile. The left and right peaks move around this anchor."
+        },
+        new EquationTermExplanation
+        {
+            Symbol = "τ",
+            Meaning = "Pseudo-time / stage progression",
+            Detail = "A latent progression coordinate inferred from early, middle, and late ordering rather than true time-lapse kinetics."
+        }
+    ];
+
+    private static Dictionary<string, EquationCoefficientStatistics> BuildSimulationCoefficientStatistics(
+        IReadOnlyList<double> leftAmplitude,
+        IReadOnlyList<double> leftSigma,
+        IReadOnlyList<double> rightAmplitude,
+        IReadOnlyList<double> rightSigma,
+        IReadOnlyList<double> separation)
+    {
+        var output = new Dictionary<string, EquationCoefficientStatistics>(StringComparer.OrdinalIgnoreCase);
+        AddPolynomialStats(output, "A_L", leftAmplitude);
+        AddPolynomialStats(output, "sigma_L", leftSigma);
+        AddPolynomialStats(output, "A_R", rightAmplitude);
+        AddPolynomialStats(output, "sigma_R", rightSigma);
+        AddPolynomialStats(output, "Delta", separation);
+        return output;
+    }
+
+    private static void AddPolynomialStats(IDictionary<string, EquationCoefficientStatistics> output, string prefix, IReadOnlyList<double> coefficients)
+    {
+        for (var i = 0; i < coefficients.Count; i++)
+        {
+            var value = coefficients[i];
+            output[$"{prefix}:c{i}"] = new EquationCoefficientStatistics
+            {
+                Mean = value,
+                StandardDeviation = 0,
+                Lower95 = value,
+                Upper95 = value
+            };
+        }
+    }
+
+    private static double ComputeProfileRmse(IReadOnlyList<PlotPoint> a, IReadOnlyList<PlotPoint> b)
+    {
+        var count = Math.Min(a.Count, b.Count);
+        if (count == 0) return 0;
+        double sum = 0;
+        for (var i = 0; i < count; i++)
+        {
+            var delta = a[i].Y - b[i].Y;
+            sum += delta * delta;
+        }
+
+        return Math.Sqrt(sum / count);
+    }
+
+    private static double ComputeProfilePeakHeight(IReadOnlyList<PlotPoint> profile) => profile.Count == 0 ? 0 : profile.Max(point => point.Y);
+
+    private static double ComputeProfileArea(IReadOnlyList<PlotPoint> profile)
+    {
+        if (profile.Count < 2) return 0;
+        double area = 0;
+        for (var i = 1; i < profile.Count; i++)
+        {
+            area += (profile[i].X - profile[i - 1].X) * (profile[i].Y + profile[i - 1].Y) / 2.0;
+        }
+
+        return area;
+    }
+
+    private static double ComputeProfileWidthNm(IReadOnlyList<PlotPoint> profile)
+    {
+        if (profile.Count < 3) return 0;
+        var peak = ComputeProfilePeakHeight(profile);
+        if (!(peak > 1e-9)) return 0;
+        var half = peak * 0.5;
+        var maxIndex = profile
+            .Select((point, index) => (point.Y, index))
+            .OrderByDescending(item => item.Y)
+            .First().index;
+        var left = maxIndex;
+        var right = maxIndex;
+        while (left > 0 && profile[left].Y >= half) left--;
+        while (right < profile.Count - 1 && profile[right].Y >= half) right++;
+        return Math.Max(0, profile[right].X - profile[left].X);
+    }
+
+    private static double ComputeProfileDipDepthNm(IReadOnlyList<PlotPoint> profile)
+    {
+        if (profile.Count < 5) return 0;
+        var mid = profile.Count / 2;
+        var leftIndex = profile.Take(mid).Select((point, index) => (point.Y, index)).OrderByDescending(item => item.Y).First().index;
+        var rightIndex = mid + profile.Skip(mid).Select((point, index) => (point.Y, index)).OrderByDescending(item => item.Y).First().index;
+        if (rightIndex <= leftIndex + 1) return 0;
+        var valley = profile.Skip(leftIndex).Take(rightIndex - leftIndex + 1).Min(point => point.Y);
+        var meanPeak = (profile[leftIndex].Y + profile[rightIndex].Y) / 2.0;
+        return Math.Max(0, meanPeak - valley);
     }
 
     private void RefreshEvolutionSeries()
@@ -926,6 +1759,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase
             InvalidateSimulationCache();
         }
 
+        ClearEquationDiscoveryResults();
         RefreshDerivedState();
     }
 
@@ -998,16 +1832,8 @@ public sealed partial class MainWindowViewModel : ViewModelBase
         SimulationSurfaceXAxisLabel = simulation.UsesGuidedAlignment ? $"Corridor offset [{simulation.Unit}]" : $"Aligned x [{simulation.Unit}]";
         SimulationSurfaceYAxisLabel = simulation.UsesGuidedAlignment ? $"Guide distance [{simulation.Unit}]" : $"Aligned y [{simulation.Unit}]";
         SimulationSeries = BuildSimulationPlotSeries(simulation, currentFrame);
-        var simulationMax = simulation.Frames.Count == 0
-            ? 1
-            : simulation.Frames
-                .Select(frame => _analysis.BuildCenteredBimodalSimulationProfile(frame, simulation.Width, simulation.Height, simulation.ScanSizeNmX))
-                .Where(profile => profile.Count > 0)
-                .Select(profile => profile.Max(point => point.Y))
-                .DefaultIfEmpty(1)
-                .Max();
         SimulationPlotFixedYMin = 0;
-        SimulationPlotFixedYMax = Math.Max(1, simulationMax * 1.05);
+        SimulationPlotFixedYMax = GetSimulationPlotYMax(simulation);
         SimulationReferenceSummaryText = BuildSimulationReferenceSummary(simulation);
         var alignmentText = simulation.UsesGuidedAlignment
             ? "The simulation now uses only the guided corridor region, widened to corridor + 20%, so the evolving profile keeps a little extra context around the extracted piecrust."
@@ -1051,6 +1877,34 @@ public sealed partial class MainWindowViewModel : ViewModelBase
         }
 
         return series;
+    }
+
+    private double GetSimulationPlotYMax(SurfaceSimulationResult simulation)
+    {
+        var maxY = simulation.Frames
+            .SelectMany(frame => GetSimulationPlotProfiles(simulation, frame))
+            .SelectMany(profile => profile)
+            .Where(point => double.IsFinite(point.Y))
+            .Select(point => point.Y)
+            .DefaultIfEmpty(1)
+            .Max();
+
+        return Math.Max(1, maxY * 1.08);
+    }
+
+    private IEnumerable<IReadOnlyList<PlotPoint>> GetSimulationPlotProfiles(SurfaceSimulationResult simulation, double[] frame)
+    {
+        var rawProfile = _analysis.BuildSurfaceCrossSection(frame, simulation.Width, simulation.Height, simulation.ScanSizeNmX);
+        if (rawProfile.Count > 0)
+        {
+            yield return rawProfile;
+        }
+
+        var fittedProfile = _analysis.BuildCenteredBimodalSimulationProfile(frame, simulation.Width, simulation.Height, simulation.ScanSizeNmX);
+        if (fittedProfile.Count > 0)
+        {
+            yield return fittedProfile;
+        }
     }
 
     private static string BuildSimulationReferenceSummary(SurfaceSimulationResult simulation)
@@ -1127,7 +1981,9 @@ public sealed partial class MainWindowViewModel : ViewModelBase
         var stats = dataset.Stats;
         sb.AppendLine(string.Join(",",
             measurement,
-            Csv(dataset.Label),
+            dataset.SequenceOrder.ToString(CultureInfo.InvariantCulture),
+            Csv(dataset.Stage),
+            Csv(dataset.FileName),
             stats.Count.ToString(CultureInfo.InvariantCulture),
             stats.Mean.ToString("F4", CultureInfo.InvariantCulture),
             stats.Median.ToString("F4", CultureInfo.InvariantCulture),
@@ -1137,6 +1993,26 @@ public sealed partial class MainWindowViewModel : ViewModelBase
             stats.WhiskerHigh.ToString("F4", CultureInfo.InvariantCulture),
             stats.StandardError.ToString("F4", CultureInfo.InvariantCulture),
             stats.StandardDeviation.ToString("F4", CultureInfo.InvariantCulture)));
+    }
+
+    private static void AppendEquationCurvesCsv(StringBuilder sb, IReadOnlyList<EquationDiscoveryCurve> curves)
+    {
+        if (curves.Count == 0) return;
+        sb.AppendLine();
+        sb.AppendLine("curve_label,stage,kind,tau,x,y");
+        foreach (var curve in curves)
+        {
+            foreach (var point in curve.Points)
+            {
+                sb.AppendLine(string.Join(",",
+                    Csv(curve.Label),
+                    Csv(curve.Stage),
+                    Csv(curve.Kind),
+                    curve.Tau.ToString("F6", CultureInfo.InvariantCulture),
+                    point.X.ToString("F6", CultureInfo.InvariantCulture),
+                    point.Y.ToString("F6", CultureInfo.InvariantCulture)));
+            }
+        }
     }
 
     private static PlotPoint[] ToRelativePercentPoints(IReadOnlyList<double> values)

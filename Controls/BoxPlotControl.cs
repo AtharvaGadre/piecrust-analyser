@@ -10,16 +10,25 @@ public sealed class BoxPlotControl : Control
 {
     static BoxPlotControl()
     {
-        AffectsRender<BoxPlotControl>(DatasetsProperty);
+        AffectsRender<BoxPlotControl>(DatasetsProperty, XAxisTitleProperty);
     }
 
     public static readonly StyledProperty<IReadOnlyList<BoxPlotDataset>?> DatasetsProperty =
         AvaloniaProperty.Register<BoxPlotControl, IReadOnlyList<BoxPlotDataset>?>(nameof(Datasets));
 
+    public static readonly StyledProperty<string?> XAxisTitleProperty =
+        AvaloniaProperty.Register<BoxPlotControl, string?>(nameof(XAxisTitle), "Sequence");
+
     public IReadOnlyList<BoxPlotDataset>? Datasets
     {
         get => GetValue(DatasetsProperty);
         set => SetValue(DatasetsProperty, value);
+    }
+
+    public string? XAxisTitle
+    {
+        get => GetValue(XAxisTitleProperty);
+        set => SetValue(XAxisTitleProperty, value);
     }
 
     public override void Render(DrawingContext context)
@@ -33,7 +42,7 @@ public sealed class BoxPlotControl : Control
         const double padL = 44;
         const double padR = 18;
         const double padT = 10;
-        const double padB = 42;
+        const double padB = 58;
         var plotRect = new Rect(padL, padT, Math.Max(1, Bounds.Width - padL - padR), Math.Max(1, Bounds.Height - padT - padB));
         context.DrawRectangle(new SolidColorBrush(Color.Parse("#1b130b")), new Pen(new SolidColorBrush(Color.Parse("#3b2a18")), 1), plotRect);
 
@@ -72,6 +81,11 @@ public sealed class BoxPlotControl : Control
             context.DrawLine(new Pen(new SolidColorBrush(Color.Parse("#f0c978")), 1.1), new Point(cx + boxWidth / 2 + 2, ToY(mean + sem)), new Point(cx + boxWidth / 2 + 8, ToY(mean + sem)));
             context.DrawEllipse(new SolidColorBrush(Color.Parse("#fff3d1")), null, new Point(cx + boxWidth / 2 + 5, meanY), 2, 2);
             DrawCenteredText(context, TrimLabel(d.Label), new Point(cx, plotRect.Bottom + 8), "#8a7a66", 8);
+        }
+
+        if (!string.IsNullOrWhiteSpace(XAxisTitle))
+        {
+            DrawCenteredText(context, XAxisTitle!, new Point(plotRect.Center.X, Bounds.Height - 18), "#a18d72", 9);
         }
     }
 

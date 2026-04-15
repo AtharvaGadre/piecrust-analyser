@@ -27,6 +27,9 @@ public sealed class DistributionSummary
 public sealed class BoxPlotDataset
 {
     public string Label { get; init; } = string.Empty;
+    public string FileName { get; init; } = string.Empty;
+    public string Stage { get; init; } = "unassigned";
+    public int SequenceOrder { get; init; }
     public DistributionSummary Stats { get; init; } = new();
     public string Color { get; init; } = "#c17832";
     public double MeanMarker { get; init; } = double.NaN;
@@ -73,6 +76,7 @@ public sealed class GuidedSummary
     public double HeightToWidthRatio { get; init; }
     public DistributionSummary? WidthSummary { get; init; }
     public DistributionSummary? HeightSummary { get; init; }
+    public DistributionSummary? HeightWidthRatioSummary { get; init; }
 }
 
 public sealed class GrowthQuantificationRow

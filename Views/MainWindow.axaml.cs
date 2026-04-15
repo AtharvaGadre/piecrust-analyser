@@ -76,6 +76,7 @@ public partial class MainWindow : Window
     private void OnRunPolynomialEvolutionClick(object? sender, RoutedEventArgs e) => Vm.RunPolynomialEvolution();
     private void OnToggleSimulationClick(object? sender, RoutedEventArgs e) => Vm.ToggleSimulationPlayback();
     private void OnResetSimulationClick(object? sender, RoutedEventArgs e) => Vm.ResetSimulationPlayback();
+    private async void OnDiscoverGrowthEquationsClick(object? sender, RoutedEventArgs e) => await Vm.DiscoverGrowthEquationsAsync();
 
     private void OnPixelSelected(object? sender, PixelSelectedEventArgs e) => Vm.HandleCanvasClick(e.Point);
 
@@ -95,6 +96,12 @@ public partial class MainWindow : Window
 
     private async void OnExportGrowthQuantCsvClick(object? sender, RoutedEventArgs e) =>
         await SaveCsvAsync(Vm.BuildGrowthQuantificationCsv(), "Save growth quantification CSV", "piecrust-growth-quant.csv");
+
+    private async void OnExportEquationDiscoveryCsvClick(object? sender, RoutedEventArgs e) =>
+        await SaveCsvAsync(Vm.BuildEquationDiscoveryCsv(), "Save equation discovery CSV", "piecrust-equation-discovery.csv");
+
+    private async void OnExportEquationDiscoveryJsonClick(object? sender, RoutedEventArgs e) =>
+        await SaveJsonAsync(Vm.BuildEquationDiscoveryJson(), "Save equation discovery JSON", "piecrust-equation-discovery.json");
 
     private void OnWindowDragOver(object? sender, DragEventArgs e)
     {
@@ -129,7 +136,17 @@ public partial class MainWindow : Window
 
     private async Task SaveCsvAsync(string csv, string title, string suggestedFileName)
     {
-        if (string.IsNullOrWhiteSpace(csv))
+        await SaveTextAsync(csv, title, suggestedFileName, "CSV", "*.csv");
+    }
+
+    private async Task SaveJsonAsync(string json, string title, string suggestedFileName)
+    {
+        await SaveTextAsync(json, title, suggestedFileName, "JSON", "*.json");
+    }
+
+    private async Task SaveTextAsync(string content, string title, string suggestedFileName, string label, string pattern)
+    {
+        if (string.IsNullOrWhiteSpace(content))
         {
             Vm.StatusText = "There is no data to export for this section yet.";
             return;
@@ -150,9 +167,9 @@ public partial class MainWindow : Window
                 SuggestedFileName = suggestedFileName,
                 FileTypeChoices =
                 [
-                    new FilePickerFileType("CSV")
+                    new FilePickerFileType(label)
                     {
-                        Patterns = ["*.csv"]
+                        Patterns = [pattern]
                     }
                 ]
             });
@@ -160,7 +177,7 @@ public partial class MainWindow : Window
         }
 
         if (string.IsNullOrWhiteSpace(path)) return;
-        await File.WriteAllTextAsync(path, csv);
-        Vm.StatusText = $"Saved CSV to {Path.GetFileName(path)}";
+        await File.WriteAllTextAsync(path, content);
+        Vm.StatusText = $"Saved {label} to {Path.GetFileName(path)}";
     }
 }

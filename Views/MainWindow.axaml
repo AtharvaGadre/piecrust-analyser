@@ -209,9 +209,10 @@
                 <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
                     <StackPanel Margin="10" Spacing="8" MinWidth="1040">
                         <StackPanel Orientation="Horizontal" Spacing="10">
-                            <TextBlock Text="Stage Box Plots" FontWeight="Bold" Foreground="#d8b07a" VerticalAlignment="Center"/>
+                            <TextBlock Text="Guided Box Plots" FontWeight="Bold" Foreground="#d8b07a" VerticalAlignment="Center"/>
                             <Button Content="Download Box Plot CSV" Click="OnExportBoxPlotsCsvClick"/>
                         </StackPanel>
+                        <TextBlock Text="Each box is built from line profiles sampled perpendicular to the guided centre line. The lateral span used for each perpendicular profile is the guided corridor width plus 10%." TextWrapping="Wrap" Foreground="#bca37d"/>
                         <TextBlock Text="Per-stage summary from image-level replicates" FontWeight="Bold" Foreground="#d8b07a"/>
                         <ItemsControl ItemsSource="{Binding StageSummaries}">
                             <ItemsControl.ItemTemplate>
@@ -231,18 +232,153 @@
                                 </DataTemplate>
                             </ItemsControl.ItemTemplate>
                         </ItemsControl>
-                        <TextBlock Text="Height Box Plots by Stage (nm)" FontWeight="Bold" Foreground="#d8b07a"/>
+                        <TextBlock Text="Height Box Plots by Sequence (nm)" FontWeight="Bold" Foreground="#d8b07a"/>
                         <Border Background="#161008" BorderBrush="#352615" BorderThickness="1" CornerRadius="8" MinWidth="980" Height="280">
-                            <controls:BoxPlotControl Datasets="{Binding HeightBoxPlots}"/>
+                            <controls:BoxPlotControl Datasets="{Binding HeightBoxPlots}" XAxisTitle="Sequence"/>
                         </Border>
-                        <TextBlock Text="Width Box Plots by Stage (nm)" FontWeight="Bold" Foreground="#d8b07a"/>
+                        <TextBlock Text="Width Box Plots by Sequence (nm)" FontWeight="Bold" Foreground="#d8b07a"/>
                         <Border Background="#161008" BorderBrush="#352615" BorderThickness="1" CornerRadius="8" MinWidth="980" Height="280">
-                            <controls:BoxPlotControl Datasets="{Binding WidthBoxPlots}"/>
+                            <controls:BoxPlotControl Datasets="{Binding WidthBoxPlots}" XAxisTitle="Sequence"/>
                         </Border>
-                        <TextBlock Text="Height/Width Ratio by Stage" FontWeight="Bold" Foreground="#d8b07a"/>
+                        <TextBlock Text="Height/Width Ratio by Sequence" FontWeight="Bold" Foreground="#d8b07a"/>
                         <Border Background="#161008" BorderBrush="#352615" BorderThickness="1" CornerRadius="8" MinWidth="980" Height="280">
-                            <controls:BoxPlotControl Datasets="{Binding HeightWidthRatioBoxPlots}"/>
+                            <controls:BoxPlotControl Datasets="{Binding HeightWidthRatioBoxPlots}" XAxisTitle="Sequence"/>
                         </Border>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <TabItem Header="Equation Discovery">
+                <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="10" Spacing="8" MinWidth="1040">
+                        <TextBlock Text="Discover a ranked family of reduced progression equations over pseudo-time tau from the guided AFM centreline profiles. This does not assume true time-lapse dynamics; it reconstructs morphology progression consistent with the ordered stage labels." TextWrapping="Wrap" Foreground="#bca37d"/>
+                        <StackPanel Orientation="Horizontal" Spacing="10">
+                            <Button Content="Discover Growth Equations" Click="OnDiscoverGrowthEquationsClick"/>
+                            <Button Content="Download Equation CSV" Click="OnExportEquationDiscoveryCsvClick"/>
+                            <Button Content="Download Equation JSON" Click="OnExportEquationDiscoveryJsonClick"/>
+                        </StackPanel>
+                        <Border Background="#161008" BorderBrush="#352615" BorderThickness="1" CornerRadius="8" Padding="10">
+                            <StackPanel Spacing="6">
+                                <TextBlock Text="{Binding EquationDiscoveryStatusText}" TextWrapping="Wrap"/>
+                                <TextBlock Text="{Binding EquationDiscoveryProfileModeText}" TextWrapping="Wrap" Foreground="#d8c29a"/>
+                                <TextBlock Text="{Binding EquationDiscoveryStageMappingText}" TextWrapping="Wrap" Foreground="#d8c29a"/>
+                                <TextBlock Text="{Binding EquationDiscoveryMetaText}" TextWrapping="Wrap" Foreground="#bca37d"/>
+                            </StackPanel>
+                        </Border>
+                        <Border Background="#161008" BorderBrush="#352615" BorderThickness="1" CornerRadius="8" Padding="10">
+                            <StackPanel Spacing="6">
+                                <TextBlock Text="How To Read The Discovered Equations" FontWeight="Bold" Foreground="#d8b07a"/>
+                                <TextBlock Text="{Binding EquationDiscoveryTermGuideText}" TextWrapping="Wrap" Foreground="#d8c29a"/>
+                            </StackPanel>
+                        </Border>
+                        <TextBlock Text="Stage Summary Used For Pseudo-time Fitting" FontWeight="Bold" Foreground="#d8b07a"/>
+                        <ItemsControl ItemsSource="{Binding EquationDiscoveryStageProfiles}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate x:DataType="models:EquationDiscoveryStageProfile">
+                                    <Border Background="#161008" BorderBrush="#352615" BorderThickness="1" CornerRadius="8" Padding="10" Margin="0,0,0,6">
+                                        <Grid ColumnDefinitions="*,*,*,*,*" ColumnSpacing="12">
+                                            <TextBlock Text="{Binding Stage}" FontWeight="SemiBold" Foreground="#f0c978"/>
+                                            <TextBlock Grid.Column="1" Text="{Binding Tau, StringFormat=Tau {0:F2}}"/>
+                                            <TextBlock Grid.Column="2" Text="{Binding SampleCount, StringFormat=Profiles {0}}"/>
+                                            <TextBlock Grid.Column="3" Text="{Binding MeanHeightNm, StringFormat=Mean height {0:F2} nm}"/>
+                                            <TextBlock Grid.Column="4" Text="{Binding MeanWidthNm, StringFormat=Mean width {0:F2} nm}"/>
+                                        </Grid>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                        <TextBlock Text="Candidate Equation Family" FontWeight="Bold" Foreground="#d8b07a"/>
+                        <ItemsControl ItemsSource="{Binding EquationFamily}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate x:DataType="models:EquationCandidateResult">
+                                    <Border Background="#161008" BorderBrush="#352615" BorderThickness="1" CornerRadius="8" Padding="10" Margin="0,0,0,6">
+                                        <StackPanel Spacing="6">
+                                            <Grid ColumnDefinitions="Auto,*,Auto,Auto,Auto" ColumnSpacing="10">
+                                                <TextBlock Text="{Binding Rank, StringFormat=Candidate {0}}" FontWeight="SemiBold" Foreground="#f0c978"/>
+                                                <StackPanel Grid.Column="1" Spacing="6">
+                                                    <Border Background="#120c07" BorderBrush="#4b361f" BorderThickness="1" CornerRadius="6" Padding="10">
+                                                        <TextBlock Text="{Binding EquationPrimaryLine}"
+                                                                   TextWrapping="Wrap"
+                                                                   FontSize="15"
+                                                                   FontWeight="SemiBold"
+                                                                   Foreground="#fff1d6"
+                                                                   FontFamily="Cascadia Mono, Menlo, Monaco, Consolas, Courier New"/>
+                                                    </Border>
+                                                    <ItemsControl ItemsSource="{Binding EquationSecondaryLines}">
+                                                        <ItemsControl.ItemTemplate>
+                                                            <DataTemplate>
+                                                                <TextBlock Text="{Binding .}"
+                                                                           TextWrapping="Wrap"
+                                                                           Margin="10,0,0,0"
+                                                                           FontSize="13"
+                                                                           Foreground="#d8c29a"
+                                                                           FontFamily="Cascadia Mono, Menlo, Monaco, Consolas, Courier New"/>
+                                                            </DataTemplate>
+                                                        </ItemsControl.ItemTemplate>
+                                                    </ItemsControl>
+                                                    <TextBlock Text="{Binding ActiveTermsText, StringFormat=Terms: {0}}"
+                                                               TextWrapping="Wrap"
+                                                               Foreground="#c7a779"/>
+                                                </StackPanel>
+                                                <TextBlock Grid.Column="2" Text="{Binding Confidence, StringFormat=Confidence {0:P0}}"/>
+                                                <TextBlock Grid.Column="3" Text="{Binding Rmse, StringFormat=RMSE {0:F3}}"/>
+                                                <TextBlock Grid.Column="4" Text="{Binding StabilityScore, StringFormat=Stability {0:F2}}"/>
+                                            </Grid>
+                                            <TextBlock Text="{Binding Notes}" Foreground="#bca37d" TextWrapping="Wrap"/>
+                                        </StackPanel>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                        <TextBlock Text="Observed vs Reconstructed Stage Profiles" FontWeight="Bold" Foreground="#d8b07a"/>
+                        <Border Background="#161008" BorderBrush="#352615" BorderThickness="1" CornerRadius="8" MinWidth="980" Height="360">
+                            <controls:LinePlotControl Series="{Binding EquationOverlaySeries}"
+                                                      Title="Observed AFM Stage Profiles z(s) vs Reconstructed z(s, tau)"
+                                                      XAxisLabel="{Binding EquationDiscoveryXAxisLabel}"
+                                                      YAxisLabel="{Binding EquationDiscoveryYAxisLabel}"
+                                                      LightTheme="True"/>
+                        </Border>
+                        <TextBlock Text="{Binding EquationDiscoveryOverlayLegendText}" Foreground="#d8c29a"/>
+                        <TextBlock Text="Pseudo-time Reconstruction Progression" FontWeight="Bold" Foreground="#d8b07a"/>
+                        <Border Background="#161008" BorderBrush="#352615" BorderThickness="1" CornerRadius="8" MinWidth="980" Height="360">
+                            <controls:LinePlotControl Series="{Binding EquationProgressionSeries}"
+                                                      Title="Reconstructed Profile Evolution z(s, tau) Across Pseudo-time"
+                                                      XAxisLabel="{Binding EquationDiscoveryXAxisLabel}"
+                                                      YAxisLabel="{Binding EquationDiscoveryYAxisLabel}"
+                                                      LightTheme="True"/>
+                        </Border>
+                        <TextBlock Text="{Binding EquationDiscoveryProgressionLegendText}" Foreground="#d8c29a"/>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <TabItem Header="Equation Terms">
+                <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="10" Spacing="8" MinWidth="980">
+                        <TextBlock Text="This tab explains the symbols used in the Discover Equations section. When the simulation-aligned discovery mode is active, the equation family is explicitly bimodal: the total piecrust profile is written as the sum of left and right Gaussian rim profiles rather than as a single Gaussian." TextWrapping="Wrap" Foreground="#bca37d"/>
+                        <Border Background="#161008" BorderBrush="#352615" BorderThickness="1" CornerRadius="8" Padding="10">
+                            <StackPanel Spacing="6">
+                                <TextBlock Text="Current Equation Guide" FontWeight="Bold" Foreground="#d8b07a"/>
+                                <TextBlock Text="{Binding EquationDiscoveryTermGuideText}" TextWrapping="Wrap" Foreground="#d8c29a"/>
+                            </StackPanel>
+                        </Border>
+                        <ItemsControl ItemsSource="{Binding EquationTermExplanations}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate x:DataType="models:EquationTermExplanation">
+                                    <Border Background="#161008" BorderBrush="#352615" BorderThickness="1" CornerRadius="8" Padding="10" Margin="0,0,0,6">
+                                        <Grid ColumnDefinitions="220,240,*" ColumnSpacing="12">
+                                            <TextBlock Text="{Binding Symbol}"
+                                                       FontSize="15"
+                                                       FontWeight="SemiBold"
+                                                       Foreground="#fff1d6"
+                                                       FontFamily="Cascadia Mono, Menlo, Monaco, Consolas, Courier New"/>
+                                            <TextBlock Grid.Column="1" Text="{Binding Meaning}" FontWeight="SemiBold" Foreground="#f0c978"/>
+                                            <TextBlock Grid.Column="2" Text="{Binding Detail}" TextWrapping="Wrap" Foreground="#d8c29a"/>
+                                        </Grid>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
                     </StackPanel>
                 </ScrollViewer>
             </TabItem>

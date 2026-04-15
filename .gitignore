@@ -6,3 +6,5 @@ publish/
 *.suo
 *.swp
 *.log
+__pycache__/
+*.pyc
