@@ -32,7 +32,7 @@ public readonly record struct GrowthPredictionContext(
 
 public sealed class SupervisedGrowthLearningService
 {
-    private const int FeatureVersion = 1;
+    private const int FeatureVersion = 2;
     private const int TargetVersion = 1;
     private readonly JsonSerializerOptions _jsonOptions = new()
     {
@@ -83,11 +83,11 @@ public sealed class SupervisedGrowthLearningService
         if (model is null)
         {
             return _examples.Count == 0
-                ? "Supervised ML status: no learned examples yet. Run guided extraction on staged files and the app will start accumulating growth examples locally."
-                : $"Supervised ML status: {_examples.Count} stored example(s), but that is not enough yet for a stable learned growth model. Add at least 3 guided staged references.";
+                ? "Supervised ML status: no learned examples yet. Run guided extraction on ordered files and the app will start accumulating growth examples locally."
+                : $"Supervised ML status: {_examples.Count} stored example(s), but that is not enough yet for a stable learned growth model. Add at least 3 guided ordered references.";
         }
 
-        return $"Supervised ML status: learned from {model.ExampleCount} accumulated example(s) stored locally. The polynomial surface fit is now being nudged by a supervised bimodal growth model with blend weight {model.BlendWeight:F2}.";
+        return $"Supervised ML status: learned from {model.ExampleCount} accumulated example(s) stored locally. The polynomial surface fit is now being nudged by a supervised profile-growth model with blend weight {model.BlendWeight:F2}.";
     }
 
     public static double[] PredictShape(SupervisedGrowthModel model, GrowthPredictionContext context)
@@ -145,7 +145,7 @@ public sealed class SupervisedGrowthLearningService
                 TargetVersion = TargetVersion,
                 Features = BuildFeatureVector(new GrowthPredictionContext(
                     progress01,
-                    StageTo01(file.Stage),
+                    progress01,
                     string.Equals(file.ConditionType, "control", StringComparison.OrdinalIgnoreCase) ? 1 : 0,
                     string.Equals(file.ConditionType, "treated", StringComparison.OrdinalIgnoreCase) ? 1 : 0,
                     Math.Log(1 + Math.Max(0, file.AntibioticDoseUgPerMl)),
@@ -284,8 +284,7 @@ public sealed class SupervisedGrowthLearningService
             var sequenceProgress = maxSequence == minSequence
                 ? orderProgress
                 : (files[i].SequenceOrder - minSequence) / (double)Math.Max(1, maxSequence - minSequence);
-            var stageProgress = StageTo01(files[i].Stage);
-            lookup[files[i].FilePath] = StatisticsAndGeometry.Clamp(sequenceProgress * 0.7 + stageProgress * 0.3, 0, 1);
+            lookup[files[i].FilePath] = StatisticsAndGeometry.Clamp(sequenceProgress, 0, 1);
         }
 
         return lookup;
@@ -380,9 +379,8 @@ public sealed class SupervisedGrowthLearningService
     {
         if (values.Count == 0) return Array.Empty<double>();
         var min = values.Min();
-        var shift = min < 0 ? -min : 0;
         var output = new double[values.Count];
-        for (var i = 0; i < values.Count; i++) output[i] = Math.Max(0, values[i] + shift);
+        for (var i = 0; i < values.Count; i++) output[i] = Math.Max(0, values[i] - min);
         return output;
     }
 

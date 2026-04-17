@@ -107,6 +107,17 @@ public sealed class SimulationReferenceInfo
     public double Position01 { get; init; }
 }
 
+public sealed class SimulationBimodalTrajectory
+{
+    public int Degree { get; init; }
+    public double[] LeftAmplitudeCoefficients { get; init; } = Array.Empty<double>();
+    public double[] LeftSigmaCoefficients { get; init; } = Array.Empty<double>();
+    public double[] RightAmplitudeCoefficients { get; init; } = Array.Empty<double>();
+    public double[] RightSigmaCoefficients { get; init; } = Array.Empty<double>();
+    public double[] SeparationCoefficients { get; init; } = Array.Empty<double>();
+    public double GuidanceBlendWeight { get; init; }
+}
+
 public sealed class SurfaceSimulationResult
 {
     public int Width { get; init; }
@@ -125,6 +136,7 @@ public sealed class SurfaceSimulationResult
     public bool UsesSupervisedLearning { get; init; }
     public int SupervisedExampleCount { get; init; }
     public double SupervisedBlendWeight { get; init; }
+    public SimulationBimodalTrajectory? BimodalTrajectory { get; init; }
 }
 
 public sealed class EvolutionRecord

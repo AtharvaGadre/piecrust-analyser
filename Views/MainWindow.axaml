@@ -67,7 +67,7 @@
                     <Button Content="Export Guided CSV" Click="OnExportCsvClick"/>
                 </WrapPanel>
 
-                <Grid ColumnDefinitions="220,180,160,160,280,*" ColumnSpacing="10">
+                <Grid ColumnDefinitions="300,190,170,170,360,*" ColumnSpacing="10">
                     <StackPanel Grid.Column="0" Spacing="2">
                         <TextBlock Text="Files" FontWeight="SemiBold" Foreground="#d8b07a"/>
                         <ListBox ItemsSource="{Binding Files}" SelectedItem="{Binding SelectedFile, Mode=TwoWay}" Height="110" Background="#120d08" BorderBrush="#352615">
@@ -108,7 +108,27 @@
                     </StackPanel>
 
                     <Border Grid.Column="4" Background="#120d08" BorderBrush="#352615" BorderThickness="1" CornerRadius="6" Padding="8">
-                        <TextBlock Text="{Binding StatusText}" TextWrapping="Wrap"/>
+                        <StackPanel Spacing="4">
+                            <TextBlock Text="Status" FontWeight="SemiBold" Foreground="#d8b07a"/>
+                            <TextBlock Text="{Binding StatusText}" TextWrapping="Wrap"/>
+                        </StackPanel>
+                    </Border>
+
+                    <Border Grid.Column="5" Background="#120d08" BorderBrush="#352615" BorderThickness="1" CornerRadius="6" Padding="8">
+                        <StackPanel Spacing="4">
+                            <TextBlock Text="Session Log" FontWeight="SemiBold" Foreground="#d8b07a"/>
+                            <TextBlock Text="{Binding SessionLogCaption}" Foreground="#8a7a5a" FontSize="11"/>
+                            <ListBox ItemsSource="{Binding ActivityLogs}" Height="86" BorderThickness="0" Background="Transparent">
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate x:DataType="vm:ActivityLogEntry">
+                                        <StackPanel Spacing="1" Margin="0,0,0,6">
+                                            <TextBlock Text="{Binding TimestampText}" Foreground="#8a7a5a" FontSize="11"/>
+                                            <TextBlock Text="{Binding Message}" TextWrapping="Wrap" Foreground="{Binding AccentHex}" FontSize="12"/>
+                                        </StackPanel>
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
+                        </StackPanel>
                     </Border>
                 </Grid>
             </StackPanel>
@@ -189,7 +209,7 @@
                                 </ScrollViewer>
                             </Border>
                         </Grid>
-                        <TextBlock Text="Straight line profiles stay on calibrated absolute height values, while the centre-line workflow is used for guided morphology extraction." TextWrapping="Wrap" Foreground="#bca37d"/>
+                        <TextBlock Text="Displayed line profiles are baseline-corrected to the local edge reference, so morphology height is shown above the local base rather than as an absolute offset." TextWrapping="Wrap" Foreground="#bca37d"/>
                         <StackPanel Orientation="Horizontal" Spacing="10">
                             <TextBlock Text="Line Profile" FontWeight="Bold" Foreground="#d8b07a" VerticalAlignment="Center"/>
                             <Button Content="Download Line Profile CSV" Click="OnExportLineProfileCsvClick"/>
@@ -212,7 +232,7 @@
                             <TextBlock Text="Guided Box Plots" FontWeight="Bold" Foreground="#d8b07a" VerticalAlignment="Center"/>
                             <Button Content="Download Box Plot CSV" Click="OnExportBoxPlotsCsvClick"/>
                         </StackPanel>
-                        <TextBlock Text="Each box is built from line profiles sampled perpendicular to the guided centre line. The lateral span used for each perpendicular profile is the guided corridor width plus 10%." TextWrapping="Wrap" Foreground="#bca37d"/>
+                        <TextBlock Text="Each box is built from line profiles sampled perpendicular to the guided centre line. The lateral span used for each perpendicular profile is the guided corridor width plus 10%, and heights are measured above the corrected local baseline rather than from absolute z offsets." TextWrapping="Wrap" Foreground="#bca37d"/>
                         <TextBlock Text="Per-stage summary from image-level replicates" FontWeight="Bold" Foreground="#d8b07a"/>
                         <ItemsControl ItemsSource="{Binding StageSummaries}">
                             <ItemsControl.ItemTemplate>
@@ -251,7 +271,7 @@
             <TabItem Header="Equation Discovery">
                 <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
                     <StackPanel Margin="10" Spacing="8" MinWidth="1040">
-                        <TextBlock Text="Discover a ranked family of reduced progression equations over pseudo-time tau from the guided AFM centreline profiles. This does not assume true time-lapse dynamics; it reconstructs morphology progression consistent with the ordered stage labels." TextWrapping="Wrap" Foreground="#bca37d"/>
+                        <TextBlock Text="Discover a ranked family of time-dependent equations from guided AFM stacks. Each image contributes 10 equidistant perpendicular profiles across corridor width +20%; those 10 profiles are averaged into one representative image profile, and the solver returns both (1) bimodal Gaussian feature-evolution equations used for playback/simulation and (2) guided-profile field equations learned from the averaged line profiles." TextWrapping="Wrap" Foreground="#bca37d"/>
                         <StackPanel Orientation="Horizontal" Spacing="10">
                             <Button Content="Discover Growth Equations" Click="OnDiscoverGrowthEquationsClick"/>
                             <Button Content="Download Equation CSV" Click="OnExportEquationDiscoveryCsvClick"/>
@@ -271,7 +291,7 @@
                                 <TextBlock Text="{Binding EquationDiscoveryTermGuideText}" TextWrapping="Wrap" Foreground="#d8c29a"/>
                             </StackPanel>
                         </Border>
-                        <TextBlock Text="Stage Summary Used For Pseudo-time Fitting" FontWeight="Bold" Foreground="#d8b07a"/>
+                        <TextBlock Text="Ordered Summary Used For Pseudo-time Fitting" FontWeight="Bold" Foreground="#d8b07a"/>
                         <ItemsControl ItemsSource="{Binding EquationDiscoveryStageProfiles}">
                             <ItemsControl.ItemTemplate>
                                 <DataTemplate x:DataType="models:EquationDiscoveryStageProfile">
@@ -330,10 +350,10 @@
                                 </DataTemplate>
                             </ItemsControl.ItemTemplate>
                         </ItemsControl>
-                        <TextBlock Text="Observed vs Reconstructed Stage Profiles" FontWeight="Bold" Foreground="#d8b07a"/>
+                        <TextBlock Text="Observed vs Reconstructed Ordered Profiles" FontWeight="Bold" Foreground="#d8b07a"/>
                         <Border Background="#161008" BorderBrush="#352615" BorderThickness="1" CornerRadius="8" MinWidth="980" Height="360">
                             <controls:LinePlotControl Series="{Binding EquationOverlaySeries}"
-                                                      Title="Observed AFM Stage Profiles z(s) vs Reconstructed z(s, tau)"
+                                                      Title="Observed Reference Profiles vs Bimodal ODE Reconstruction"
                                                       XAxisLabel="{Binding EquationDiscoveryXAxisLabel}"
                                                       YAxisLabel="{Binding EquationDiscoveryYAxisLabel}"
                                                       LightTheme="True"/>
@@ -342,12 +362,55 @@
                         <TextBlock Text="Pseudo-time Reconstruction Progression" FontWeight="Bold" Foreground="#d8b07a"/>
                         <Border Background="#161008" BorderBrush="#352615" BorderThickness="1" CornerRadius="8" MinWidth="980" Height="360">
                             <controls:LinePlotControl Series="{Binding EquationProgressionSeries}"
-                                                      Title="Reconstructed Profile Evolution z(s, tau) Across Pseudo-time"
+                                                      Title="Bimodal Tramline Profile Evolution h(z, tau)"
                                                       XAxisLabel="{Binding EquationDiscoveryXAxisLabel}"
                                                       YAxisLabel="{Binding EquationDiscoveryYAxisLabel}"
                                                       LightTheme="True"/>
                         </Border>
                         <TextBlock Text="{Binding EquationDiscoveryProgressionLegendText}" Foreground="#d8c29a"/>
+                        <TextBlock Text="Equation Playback" FontWeight="Bold" Foreground="#d8b07a"/>
+                        <Border Background="#161008" BorderBrush="#352615" BorderThickness="1" CornerRadius="8" Padding="10">
+                            <StackPanel Spacing="8">
+                                <StackPanel Orientation="Horizontal" Spacing="10">
+                                    <Button Content="Play / Pause Playback" Click="OnToggleEquationPlaybackClick"/>
+                                    <Button Content="Reset Playback" Click="OnResetEquationPlaybackClick"/>
+                                </StackPanel>
+                                <TextBlock Text="{Binding EquationPlaybackStatusText}" TextWrapping="Wrap" Foreground="#bca37d"/>
+                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                    <TextBlock Text="Frame" VerticalAlignment="Center"/>
+                                    <Slider Minimum="0"
+                                            Maximum="{Binding EquationPlaybackFrameMaximum}"
+                                            Value="{Binding EquationPlaybackFramePosition, Mode=TwoWay}"
+                                            Width="300"/>
+                                    <TextBlock Text="{Binding EquationPlaybackFramePosition, StringFormat={}{0:F0}}" VerticalAlignment="Center"/>
+                                </StackPanel>
+                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                    <TextBlock Text="Speed" VerticalAlignment="Center"/>
+                                    <Slider Minimum="0.1"
+                                            Maximum="3.0"
+                                            Value="{Binding EquationSimulationPlayback.PlaybackSpeed, Mode=TwoWay}"
+                                            Width="220"/>
+                                    <TextBlock Text="{Binding EquationSimulationPlayback.PlaybackSpeed, StringFormat={}{0:F1}x}" VerticalAlignment="Center"/>
+                                </StackPanel>
+                                <StackPanel Orientation="Horizontal" Spacing="14">
+                                    <TextBlock Text="{Binding EquationPlaybackTauText}" Foreground="#d8c29a"/>
+                                    <TextBlock Text="{Binding EquationPlaybackHeightText}" Foreground="#d8c29a"/>
+                                    <TextBlock Text="{Binding EquationPlaybackWidthText}" Foreground="#d8c29a"/>
+                                </StackPanel>
+                                <TextBlock Text="Solid line = simulated bimodal feature-evolution profile. Dashed line = matching bimodal Gaussian envelope. Fixed axes keep tramline growth visible across frames." TextWrapping="Wrap" Foreground="#bca37d"/>
+                                <Border Background="#f4f0e7" BorderBrush="#d8d2c5" BorderThickness="1" CornerRadius="8" Height="280">
+                                    <controls:LinePlotControl Series="{Binding EquationPlaybackSeries}"
+                                                              Title="Bimodal Feature Playback"
+                                                              XAxisLabel="{Binding EquationDiscoveryXAxisLabel}"
+                                                              YAxisLabel="{Binding EquationDiscoveryYAxisLabel}"
+                                                              LightTheme="True"
+                                                              FixedXMin="{Binding EquationPlaybackFixedXMin}"
+                                                              FixedXMax="{Binding EquationPlaybackFixedXMax}"
+                                                              FixedYMin="{Binding EquationPlaybackFixedYMin}"
+                                                              FixedYMax="{Binding EquationPlaybackFixedYMax}"/>
+                                </Border>
+                            </StackPanel>
+                        </Border>
                     </StackPanel>
                 </ScrollViewer>
             </TabItem>
@@ -355,7 +418,7 @@
             <TabItem Header="Equation Terms">
                 <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
                     <StackPanel Margin="10" Spacing="8" MinWidth="980">
-                        <TextBlock Text="This tab explains the symbols used in the Discover Equations section. When the simulation-aligned discovery mode is active, the equation family is explicitly bimodal: the total piecrust profile is written as the sum of left and right Gaussian rim profiles rather than as a single Gaussian." TextWrapping="Wrap" Foreground="#bca37d"/>
+                        <TextBlock Text="This tab explains the symbols used in the Discover Equations section. It now covers both discovered equation families: the bimodal Gaussian feature-evolution system used for simulation playback and the guided-profile field equation learned from per-image averaged perpendicular line profiles." TextWrapping="Wrap" Foreground="#bca37d"/>
                         <Border Background="#161008" BorderBrush="#352615" BorderThickness="1" CornerRadius="8" Padding="10">
                             <StackPanel Spacing="6">
                                 <TextBlock Text="Current Equation Guide" FontWeight="Bold" Foreground="#d8b07a"/>
@@ -386,7 +449,7 @@
             <TabItem Header="Growth Model">
                 <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
                     <StackPanel Margin="10" Spacing="8" MinWidth="1040">
-                        <TextBlock Text="Number imported TIFF/SPM references in sequence, choose a start and end file, and the model will use all numbered references in between to fit a polynomial surface evolution that fills the missing growth states." TextWrapping="Wrap" Foreground="#bca37d"/>
+                        <TextBlock Text="Number imported TIFF/SPM references in sequence, choose a start and end file, and the model will use all numbered references in between to fit a centered polynomial surface evolution whose displayed cross-section is constrained by a bimodal Gaussian growth fit over pseudo-time." TextWrapping="Wrap" Foreground="#bca37d"/>
                         <TextBlock Text="{Binding SupervisedModelStatusText}" TextWrapping="Wrap" Foreground="#d8c29a"/>
                         <StackPanel Orientation="Horizontal" Spacing="10">
                             <TextBlock Text="Start Reference" VerticalAlignment="Center"/>
@@ -429,6 +492,8 @@
                                                       Title="Polynomial Surface Evolution Cross-section"
                                                       XAxisLabel="{Binding SimulationXAxisLabel}"
                                                       YAxisLabel="{Binding SimulationYAxisLabel}"
+                                                      FixedXMin="{Binding SimulationPlotFixedXMin}"
+                                                      FixedXMax="{Binding SimulationPlotFixedXMax}"
                                                       FixedYMin="{Binding SimulationPlotFixedYMin}"
                                                       FixedYMax="{Binding SimulationPlotFixedYMax}"/>
                         </Border>

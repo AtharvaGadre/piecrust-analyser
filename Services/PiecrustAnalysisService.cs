@@ -68,16 +68,18 @@ public sealed class PiecrustAnalysisService
         var smooth1 = StatisticsAndGeometry.SavitzkyGolaySmooth(gaussianPreSmooth, firstWindow, 3);
         var smooth2 = StatisticsAndGeometry.SavitzkyGolaySmooth(smooth1, secondWindow, 3);
 
+        var corrected = ShiftToZero(BaselineCorrect(smooth2));
         var profile = new PlotPoint[steps + 1];
-        for (var i = 0; i <= steps; i++) profile[i] = new PlotPoint(distancesNm[i], smooth2[i]);
+        for (var i = 0; i <= steps; i++) profile[i] = new PlotPoint(distancesNm[i], corrected[i]);
         return profile;
     }
 
     public EquationDiscoveryProfileInput? BuildEquationDiscoveryProfileInput(PiecrustFileState file)
     {
         if (!HasUsableGuide(file) || file.HeightData.Length == 0) return null;
+        var guidedPerpendicularProfiles = BuildGuidedPerpendicularProfilesForDiscovery(file, 10, 0.20, 1.0);
         var sampled = StatisticsAndGeometry.SampleCurveAtPhysicalInterval(file.GuidePoints, 1.0, file.NmPerPixel);
-        if (sampled.Count < 24) return null;
+        if (sampled.Count < 8) return null;
 
         var xNm = new double[sampled.Count];
         var yNm = new double[sampled.Count];
@@ -120,6 +122,7 @@ public sealed class PiecrustAnalysisService
         {
             FileName = file.Name,
             FilePath = file.FilePath,
+            SequenceOrder = file.SequenceOrder,
             Stage = file.Stage,
             ConditionType = file.ConditionType,
             Unit = file.Unit,
@@ -136,8 +139,77 @@ public sealed class PiecrustAnalysisService
             XNm = xNm,
             YNm = yNm,
             SNm = sNm,
-            ZNm = zNm
+            ZNm = zNm,
+            GuidedPerpendicularProfiles = guidedPerpendicularProfiles
         };
+    }
+
+    private IReadOnlyList<EquationDiscoveryGuidedProfileInput> BuildGuidedPerpendicularProfilesForDiscovery(
+        PiecrustFileState file,
+        int profileCount,
+        double widthExpansionFraction,
+        double sampleStepNm)
+    {
+        if (!HasUsableGuide(file) || file.HeightData.Length == 0 || profileCount <= 0)
+        {
+            return Array.Empty<EquationDiscoveryGuidedProfileInput>();
+        }
+
+        var sampled = StatisticsAndGeometry.SampleCurveAtPhysicalInterval(
+            file.GuidePoints,
+            Math.Max(file.NmPerPixel * 0.5, sampleStepNm),
+            file.NmPerPixel);
+        if (sampled.Count < 2)
+        {
+            return Array.Empty<EquationDiscoveryGuidedProfileInput>();
+        }
+
+        var guideLengthNm = sampled[^1].ArcNm;
+        var halfWidthPx = GetGuideProfileHalfWidthPx(file, widthExpansionFraction);
+        var stepPx = Math.Max(0.25, sampleStepNm / Math.Max(1e-9, file.NmPerPixel));
+        var outputs = new List<EquationDiscoveryGuidedProfileInput>(profileCount);
+
+        for (var profileIndex = 0; profileIndex < profileCount; profileIndex++)
+        {
+            var progress = profileCount == 1
+                ? 0.5
+                : profileIndex / (double)Math.Max(1, profileCount - 1);
+            var arcPositionNm = progress * Math.Max(0, guideLengthNm);
+            var (point, tangent) = InterpolateGuideFrame(sampled, arcPositionNm);
+            var profile = GetPerpendicularProfile(
+                file.HeightData,
+                file.PixelWidth,
+                file.PixelHeight,
+                point,
+                tangent,
+                halfWidthPx,
+                stepPx,
+                file.NmPerPixel);
+            var smoothed = StatisticsAndGeometry.MovingGaussianSmooth(profile.Values, 2);
+            var corrected = ShiftToZero(BaselineCorrect(smoothed));
+
+            var normal = new PointD(-tangent.Y, tangent.X);
+            var xNm = new double[profile.OffsetsNm.Length];
+            var yNm = new double[profile.OffsetsNm.Length];
+            for (var i = 0; i < profile.OffsetsNm.Length; i++)
+            {
+                var offsetPx = profile.OffsetsNm[i] / Math.Max(1e-9, file.NmPerPixel);
+                xNm[i] = (point.X + normal.X * offsetPx) * file.NmPerPixel;
+                yNm[i] = (point.Y + normal.Y * offsetPx) * file.NmPerPixel;
+            }
+
+            outputs.Add(new EquationDiscoveryGuidedProfileInput
+            {
+                ProfileIndex = profileIndex,
+                ArcPositionNm = arcPositionNm,
+                XNm = xNm,
+                YNm = yNm,
+                SNm = profile.OffsetsNm,
+                ZNm = corrected
+            });
+        }
+
+        return outputs;
     }
 
     public GuidedSummary? ExtractGuidedSummary(PiecrustFileState file)
@@ -256,13 +328,13 @@ public sealed class PiecrustAnalysisService
         var values = new double[file.PixelWidth];
         for (var x = 0; x < file.PixelWidth; x++) values[x] = file.HeightData[row * file.PixelWidth + x];
         var smoothed = StatisticsAndGeometry.MovingGaussianSmooth(values, 3);
-        var shifted = ShiftToZero(smoothed);
+        var shifted = ShiftToZero(BaselineCorrect(smoothed));
         return new EvolutionRecord
         {
             FileName = file.Name,
             Stage = file.Stage,
             Profile = Resample(shifted, 160),
-            GaussianParameters = ExtractDoubleGaussian(smoothed)
+            GaussianParameters = ExtractDoubleGaussian(shifted)
         };
     }
 
@@ -537,6 +609,8 @@ public sealed class PiecrustAnalysisService
 
         var degree = Math.Min(3, ordered.Files.Length - 1);
         if (degree < 1) return null;
+        var scanSizeNmX = useGuidedAlignment ? targetWidthNm : GetScanSizeXNm(startFile);
+        var bimodalTrajectory = BuildSimulationBimodalTrajectory(surfaces, ordered.Positions, targetWidth, targetHeight, scanSizeNmX, degree, supervisedModel is { ExampleCount: >= 3 });
 
         var projector = BuildPolynomialProjector(ordered.Positions, degree);
         var pixelCount = targetWidth * targetHeight;
@@ -589,8 +663,25 @@ public sealed class PiecrustAnalysisService
             }
         }
 
+        if (bimodalTrajectory is not null && lockedReferenceSurface is not null)
+        {
+            for (var frameIndex = 0; frameIndex < frames.Length; frameIndex++)
+            {
+                var predictedParameters = EvaluateSimulationBimodalParameters(bimodalTrajectory, frameProgresses[frameIndex]);
+                if (predictedParameters.Length < 5) continue;
+
+                var predictedProfile = BuildCenteredBimodalProfileFromParameters(predictedParameters, targetWidth, scanSizeNmX)
+                    .Select(point => point.Y)
+                    .ToArray();
+                if (predictedProfile.Length != targetWidth) continue;
+
+                var guidedFrame = ApplyBimodalTrajectoryGuidance(frames[frameIndex], targetWidth, targetHeight, predictedProfile, bimodalTrajectory.GuidanceBlendWeight);
+                guidedFrame = CenterSurfaceByBimodalProfile(guidedFrame, targetWidth, targetHeight);
+                frames[frameIndex] = AlignSurfaceToReference(guidedFrame, lockedReferenceSurface, targetWidth, targetHeight, maxShift: 4);
+            }
+        }
+
         var displayRange = EstimateSurfaceRange(frames);
-        var scanSizeNmX = useGuidedAlignment ? targetWidthNm : GetScanSizeXNm(startFile);
         var scanSizeNmY = useGuidedAlignment ? targetHeightNm : GetScanSizeYNm(startFile);
 
         return new SurfaceSimulationResult
@@ -616,7 +707,8 @@ public sealed class PiecrustAnalysisService
             UsesGuidedAlignment = useGuidedAlignment,
             UsesSupervisedLearning = usesSupervisedLearning,
             SupervisedExampleCount = supervisedModel?.ExampleCount ?? 0,
-            SupervisedBlendWeight = supervisedBlendWeight
+            SupervisedBlendWeight = supervisedBlendWeight,
+            BimodalTrajectory = bimodalTrajectory
         };
     }
 
@@ -641,13 +733,35 @@ public sealed class PiecrustAnalysisService
         return output;
     }
 
+    public IReadOnlyList<PlotPoint> BuildBimodalPolynomialSimulationProfile(SurfaceSimulationResult simulation, double progress)
+    {
+        if (simulation.BimodalTrajectory is null) return Array.Empty<PlotPoint>();
+        var parameters = EvaluateSimulationBimodalParameters(simulation.BimodalTrajectory, progress);
+        return parameters.Length < 5
+            ? Array.Empty<PlotPoint>()
+            : BuildCenteredBimodalProfileFromParameters(parameters, simulation.Width, simulation.ScanSizeNmX);
+    }
+
+    public double[] EvaluateSimulationBimodalParameters(SimulationBimodalTrajectory trajectory, double progress)
+    {
+        progress = StatisticsAndGeometry.Clamp(progress, 0, 1);
+        return
+        [
+            Math.Max(0, EvaluatePolynomialCurve(trajectory.LeftAmplitudeCoefficients, progress)),
+            Math.Max(1e-3, Math.Abs(EvaluatePolynomialCurve(trajectory.LeftSigmaCoefficients, progress))),
+            Math.Max(0, EvaluatePolynomialCurve(trajectory.RightAmplitudeCoefficients, progress)),
+            Math.Max(1e-3, Math.Abs(EvaluatePolynomialCurve(trajectory.RightSigmaCoefficients, progress))),
+            Math.Max(0, Math.Abs(EvaluatePolynomialCurve(trajectory.SeparationCoefficients, progress)))
+        ];
+    }
+
     public IReadOnlyList<PlotPoint> BuildSurfaceCrossSection(double[] frame, int width, int height, double scanSizeNmX)
     {
         if (frame.Length == 0 || width <= 0 || height <= 0) return Array.Empty<PlotPoint>();
         var rowCenter = Math.Clamp(height / 2, 0, Math.Max(0, height - 1));
         var rowStart = Math.Max(0, rowCenter - 2);
         var rowEnd = Math.Min(height - 1, rowCenter + 2);
-        var points = new PlotPoint[width];
+        var values = new double[width];
         for (var x = 0; x < width; x++)
         {
             double sum = 0;
@@ -658,8 +772,15 @@ public sealed class PiecrustAnalysisService
                 count++;
             }
 
-            var xNm = width > 1 ? x * scanSizeNmX / (width - 1.0) : 0;
-            points[x] = new PlotPoint(xNm, Math.Max(0, sum / Math.Max(1, count)));
+            values[x] = Math.Max(0, sum / Math.Max(1, count));
+        }
+
+        var corrected = ShiftToZero(BaselineCorrect(values));
+        var points = new PlotPoint[width];
+        for (var x = 0; x < width; x++)
+        {
+            var xNm = GetCenteredAxisPositionNm(x, width, scanSizeNmX);
+            points[x] = new PlotPoint(xNm, corrected[x]);
         }
 
         return points;
@@ -671,18 +792,125 @@ public sealed class PiecrustAnalysisService
         if (rawProfile.Count == 0) return Array.Empty<PlotPoint>();
 
         var values = rawProfile.Select(point => point.Y).ToArray();
-        var smoothed = StatisticsAndGeometry.MovingGaussianSmooth(values, 3);
-        var corrected = ShiftToZero(BaselineCorrect(smoothed));
-        if (corrected.Length < 8) return rawProfile;
+        if (values.Length < 8) return rawProfile;
 
-        var parameters = ExtractDoubleGaussian(corrected);
-        var fitted = BuildCenteredGaussianTemplate(parameters, corrected.Length);
-        if (fitted.Length == 0) return rawProfile;
+        var xOffsets = rawProfile.Select(point => point.X).ToArray();
+        var smoothed = StatisticsAndGeometry.MovingGaussianSmooth(values, 2);
+        var fitted = BuildLocalPolynomialProfileFit(smoothed);
+        fitted = PreserveDetectedTramline(smoothed, fitted, xOffsets);
+        if (fitted.Length != rawProfile.Count) return rawProfile;
 
-        var scale = rawProfile.Count > 1 ? rawProfile[^1].X / (rawProfile.Count - 1.0) : 0;
         return fitted
-            .Select((value, index) => new PlotPoint(index * scale, Math.Max(0, value)))
+            .Select((value, index) => new PlotPoint(rawProfile[index].X, Math.Max(0, value)))
             .ToArray();
+    }
+
+    private static double[] BuildLocalPolynomialProfileFit(IReadOnlyList<double> values)
+    {
+        if (values.Count == 0) return Array.Empty<double>();
+        var broadWindow = ChooseAdaptiveSavitzkyGolayWindow(values.Count, 0.18, 29, 9);
+        var detailWindow = ChooseAdaptiveSavitzkyGolayWindow(values.Count, 0.10, 15, 5);
+        var fitted = StatisticsAndGeometry.SavitzkyGolaySmooth(values, broadWindow, 3);
+        return StatisticsAndGeometry.SavitzkyGolaySmooth(fitted, detailWindow, 3);
+    }
+
+    private static int ChooseAdaptiveSavitzkyGolayWindow(int count, double fraction, int maxWindow, int minWindow)
+    {
+        if (count < 3) return count;
+        var window = (int)Math.Round(count * fraction);
+        window = Math.Max(minWindow, Math.Min(maxWindow, window));
+        if (window >= count) window = count - 1;
+        if (window < 3) window = Math.Min(count, 3);
+        if (window % 2 == 0) window--;
+        if (window < 3) window = Math.Min(count | 1, count);
+        return Math.Max(3, Math.Min(count % 2 == 1 ? count : count - 1, window));
+    }
+
+    private static double[] PreserveDetectedTramline(IReadOnlyList<double> rawProfile, IReadOnlyList<double> fittedProfile, IReadOnlyList<double> offsetsNm)
+    {
+        if (rawProfile.Count == 0 || rawProfile.Count != fittedProfile.Count || rawProfile.Count != offsetsNm.Count)
+        {
+            return fittedProfile.ToArray();
+        }
+
+        var blended = fittedProfile.ToArray();
+        var correctedRaw = ShiftToZero(BaselineCorrect(StatisticsAndGeometry.MovingGaussianSmooth(rawProfile, 2)));
+        var dominantPeaks = FindDominantTramlinePeaks(correctedRaw, offsetsNm);
+        if (dominantPeaks.Length < 2)
+        {
+            for (var i = 0; i < blended.Length; i++)
+            {
+                blended[i] = fittedProfile[i] * 0.84 + rawProfile[i] * 0.16;
+            }
+
+            return blended;
+        }
+
+        var leftPeak = dominantPeaks[0];
+        var rightPeak = dominantPeaks[1];
+        var valleyIndex = FindValleyIndex(correctedRaw, leftPeak.Index, rightPeak.Index);
+        var valleyOffsetNm = offsetsNm[valleyIndex];
+        var separationNm = Math.Max(1e-6, Math.Abs(rightPeak.OffsetNm - leftPeak.OffsetNm));
+        var totalSpanNm = Math.Max(1e-6, offsetsNm[^1] - offsetsNm[0]);
+        var featureSigmaNm = Math.Max(totalSpanNm * 0.035, separationNm * 0.22);
+        var valleySigmaNm = Math.Max(totalSpanNm * 0.030, featureSigmaNm * 0.85);
+
+        for (var i = 0; i < blended.Length; i++)
+        {
+            var xNm = offsetsNm[i];
+            var leftWeight = Math.Exp(-Math.Pow(xNm - leftPeak.OffsetNm, 2) / (2 * featureSigmaNm * featureSigmaNm));
+            var rightWeight = Math.Exp(-Math.Pow(xNm - rightPeak.OffsetNm, 2) / (2 * featureSigmaNm * featureSigmaNm));
+            var valleyWeight = Math.Exp(-Math.Pow(xNm - valleyOffsetNm, 2) / (2 * valleySigmaNm * valleySigmaNm));
+            var structureWeight = StatisticsAndGeometry.Clamp(Math.Max(Math.Max(leftWeight, rightWeight), valleyWeight * 0.9), 0, 1);
+            var blendWeight = 0.18 + structureWeight * 0.55;
+            blended[i] = fittedProfile[i] * (1 - blendWeight) + rawProfile[i] * blendWeight;
+        }
+
+        var refinementWindow = ChooseAdaptiveSavitzkyGolayWindow(blended.Length, 0.08, 11, 5);
+        return StatisticsAndGeometry.SavitzkyGolaySmooth(blended, refinementWindow, 2);
+    }
+
+    private static PeakInfo[] FindDominantTramlinePeaks(IReadOnlyList<double> values, IReadOnlyList<double> offsetsNm)
+    {
+        var peaks = FindPeaks(values, offsetsNm);
+        if (peaks.Count < 2) return Array.Empty<PeakInfo>();
+
+        var centerOffset = offsetsNm.Count == 0 ? 0 : (offsetsNm[0] + offsetsNm[^1]) / 2.0;
+        var left = peaks
+            .Where(peak => peak.OffsetNm <= centerOffset)
+            .OrderByDescending(peak => peak.Height)
+            .FirstOrDefault();
+        var right = peaks
+            .Where(peak => peak.OffsetNm >= centerOffset)
+            .OrderByDescending(peak => peak.Height)
+            .FirstOrDefault();
+
+        if (left is not null && right is not null && left.Index != right.Index)
+        {
+            return new[] { left, right }.OrderBy(peak => peak.OffsetNm).ToArray();
+        }
+
+        return peaks
+            .Take(2)
+            .OrderBy(peak => peak.OffsetNm)
+            .ToArray();
+    }
+
+    private static int FindValleyIndex(IReadOnlyList<double> values, int leftIndex, int rightIndex)
+    {
+        if (values.Count == 0) return 0;
+        leftIndex = Math.Clamp(leftIndex, 0, values.Count - 1);
+        rightIndex = Math.Clamp(rightIndex, leftIndex, values.Count - 1);
+        var valleyIndex = leftIndex;
+        var valleyValue = values[leftIndex];
+        for (var i = leftIndex + 1; i <= rightIndex; i++)
+        {
+            if (values[i] >= valleyValue) continue;
+            valleyValue = values[i];
+            valleyIndex = i;
+        }
+
+        return valleyIndex;
     }
 
     public double[] ExtractCenteredBimodalSimulationParameters(double[] frame, int width, int height, double scanSizeNmX)
@@ -697,7 +925,7 @@ public sealed class PiecrustAnalysisService
 
         var parameters = ExtractDoubleGaussian(corrected);
         if (parameters.Length < 6) return Array.Empty<double>();
-        var spacingNm = rawProfile.Count > 1 ? rawProfile[^1].X / (rawProfile.Count - 1.0) : 1.0;
+        var spacingNm = rawProfile.Count > 1 ? (rawProfile[^1].X - rawProfile[0].X) / (rawProfile.Count - 1.0) : 1.0;
         return
         [
             Math.Max(0, parameters[0]),
@@ -716,19 +944,63 @@ public sealed class PiecrustAnalysisService
         var amplitudeRight = Math.Max(0, parameters[2]);
         var sigmaRightNm = Math.Max(1e-6, Math.Abs(parameters[3]));
         var separationNm = Math.Max(0, Math.Abs(parameters[4]));
-        var centerNm = scanSizeNmX / 2.0;
-        var leftCenterNm = centerNm - separationNm / 2.0;
-        var rightCenterNm = centerNm + separationNm / 2.0;
+        var leftCenterNm = -separationNm / 2.0;
+        var rightCenterNm = separationNm / 2.0;
         var points = new PlotPoint[count];
         for (var i = 0; i < count; i++)
         {
-            var sNm = count <= 1 ? 0 : i * scanSizeNmX / (count - 1.0);
+            var sNm = GetCenteredAxisPositionNm(i, count, scanSizeNmX);
             var left = amplitudeLeft * Math.Exp(-Math.Pow(sNm - leftCenterNm, 2) / (2 * sigmaLeftNm * sigmaLeftNm));
             var right = amplitudeRight * Math.Exp(-Math.Pow(sNm - rightCenterNm, 2) / (2 * sigmaRightNm * sigmaRightNm));
             points[i] = new PlotPoint(sNm, Math.Max(0, left + right));
         }
 
         return points;
+    }
+
+    private SimulationBimodalTrajectory? BuildSimulationBimodalTrajectory(
+        IReadOnlyList<double[]> referenceSurfaces,
+        IReadOnlyList<double> positions,
+        int width,
+        int height,
+        double scanSizeNmX,
+        int degree,
+        bool usesSupervisedLearning)
+    {
+        if (referenceSurfaces.Count == 0 || referenceSurfaces.Count != positions.Count) return null;
+
+        var samples = new List<(double Tau, double[] Parameters)>(referenceSurfaces.Count);
+        for (var i = 0; i < referenceSurfaces.Count; i++)
+        {
+            var parameters = ExtractCenteredBimodalSimulationParameters(referenceSurfaces[i], width, height, scanSizeNmX);
+            if (parameters.Length < 5) continue;
+            samples.Add((StatisticsAndGeometry.Clamp(positions[i], 0, 1), parameters));
+        }
+
+        if (samples.Count < 2) return null;
+        degree = Math.Clamp(degree, 1, Math.Max(1, samples.Count - 1));
+
+        var taus = samples.Select(sample => sample.Tau).ToArray();
+        var leftAmplitude = FitPolynomialCurve(taus, samples.Select(sample => sample.Parameters[0]).ToArray(), degree);
+        var leftSigma = FitPolynomialCurve(taus, samples.Select(sample => sample.Parameters[1]).ToArray(), degree);
+        var rightAmplitude = FitPolynomialCurve(taus, samples.Select(sample => sample.Parameters[2]).ToArray(), degree);
+        var rightSigma = FitPolynomialCurve(taus, samples.Select(sample => sample.Parameters[3]).ToArray(), degree);
+        var separation = FitPolynomialCurve(taus, samples.Select(sample => sample.Parameters[4]).ToArray(), degree);
+        if (leftAmplitude.Length == 0 || leftSigma.Length == 0 || rightAmplitude.Length == 0 || rightSigma.Length == 0 || separation.Length == 0)
+        {
+            return null;
+        }
+
+        return new SimulationBimodalTrajectory
+        {
+            Degree = degree,
+            LeftAmplitudeCoefficients = leftAmplitude,
+            LeftSigmaCoefficients = leftSigma,
+            RightAmplitudeCoefficients = rightAmplitude,
+            RightSigmaCoefficients = rightSigma,
+            SeparationCoefficients = separation,
+            GuidanceBlendWeight = usesSupervisedLearning ? 0.28 : 0.42
+        };
     }
 
     public double[] FitPolynomialCurve(IReadOnlyList<double> positions, IReadOnlyList<double> values, int degree)
@@ -883,9 +1155,8 @@ public sealed class PiecrustAnalysisService
     {
         if (values.Count == 0) return Array.Empty<double>();
         var min = values.Min();
-        var shift = min < 0 ? -min : 0;
         var output = new double[values.Count];
-        for (var i = 0; i < values.Count; i++) output[i] = Math.Max(0, values[i] + shift);
+        for (var i = 0; i < values.Count; i++) output[i] = Math.Max(0, values[i] - min);
         return output;
     }
 
@@ -1031,7 +1302,7 @@ public sealed class PiecrustAnalysisService
         var estimated = EstimateCrossSectionDescriptors(currentFrame, width, height, scanSizeNmX);
         return new GrowthPredictionContext(
             StatisticsAndGeometry.Clamp(progress, 0, 1),
-            InterpolateReferenceFeature(orderedFiles, orderedPositions, progress, file => StageTo01(file.Stage), progress),
+            StatisticsAndGeometry.Clamp(progress, 0, 1),
             InterpolateReferenceFeature(orderedFiles, orderedPositions, progress, file => string.Equals(file.ConditionType, "control", StringComparison.OrdinalIgnoreCase) ? 1.0 : 0.0, 0),
             InterpolateReferenceFeature(orderedFiles, orderedPositions, progress, file => string.Equals(file.ConditionType, "treated", StringComparison.OrdinalIgnoreCase) ? 1.0 : 0.0, 0),
             InterpolateReferenceFeature(orderedFiles, orderedPositions, progress, file => Math.Log(1 + Math.Max(0, file.AntibioticDoseUgPerMl)), 0),
@@ -1135,7 +1406,16 @@ public sealed class PiecrustAnalysisService
         return ShiftToZero(output);
     }
 
+    private static double[] ApplyBimodalTrajectoryGuidance(double[] frame, int width, int height, IReadOnlyList<double> predictedProfile, double blendWeight) =>
+        ApplyProfileGuidance(frame, width, height, predictedProfile, blendWeight);
+
     private static double[] ApplySupervisedProfileGuidance(double[] frame, int width, int height, IReadOnlyList<double> predictedProfile, double blendWeight)
+    {
+        if (frame.Length == 0 || width <= 0 || height <= 0 || predictedProfile.Count != width || !(blendWeight > 1e-6)) return frame;
+        return ApplyProfileGuidance(frame, width, height, predictedProfile, blendWeight);
+    }
+
+    private static double[] ApplyProfileGuidance(double[] frame, int width, int height, IReadOnlyList<double> predictedProfile, double blendWeight)
     {
         if (frame.Length == 0 || width <= 0 || height <= 0 || predictedProfile.Count != width || !(blendWeight > 1e-6)) return frame;
         var currentProfile = BuildHorizontalPeakProfile(frame, width, height);
@@ -1164,6 +1444,13 @@ public sealed class PiecrustAnalysisService
         }
 
         return output;
+    }
+
+    private static double GetCenteredAxisPositionNm(int index, int count, double scanSizeNmX)
+    {
+        if (count <= 1) return 0;
+        var fraction = index / Math.Max(1.0, count - 1.0);
+        return -scanSizeNmX / 2.0 + fraction * scanSizeNmX;
     }
 
     private static double StageTo01(string stage) => stage switch

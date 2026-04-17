@@ -103,6 +103,64 @@ public sealed class HeightMapDisplayService
         return StatisticsAndGeometry.Clamp((value - range.Min) / Math.Max(1e-9, range.Max - range.Min) * 100.0, 0, 100);
     }
 
+    public static float[,] CenterHeightMap(float[,] heightMap)
+    {
+        var height = heightMap.GetLength(0);
+        var width = heightMap.GetLength(1);
+        var centered = new float[height, width];
+        if (height == 0 || width == 0) return centered;
+
+        float sum = 0;
+        for (var y = 0; y < height; y++)
+        {
+            for (var x = 0; x < width; x++)
+            {
+                centered[y, x] = heightMap[y, x];
+                sum += centered[y, x];
+            }
+        }
+
+        var meanOffset = sum / (height * width);
+        for (var y = 0; y < height; y++)
+        {
+            for (var x = 0; x < width; x++)
+            {
+                centered[y, x] -= meanOffset;
+            }
+        }
+
+        // (PHASE 2) Mirror the Python centering step by shifting the strongest feature to the map centre.
+        var peakY = 0;
+        var peakX = 0;
+        var peakMagnitude = float.NegativeInfinity;
+        for (var y = 0; y < height; y++)
+        {
+            for (var x = 0; x < width; x++)
+            {
+                var magnitude = MathF.Abs(centered[y, x]);
+                if (!(magnitude > peakMagnitude)) continue;
+                peakMagnitude = magnitude;
+                peakY = y;
+                peakX = x;
+            }
+        }
+
+        var shifted = new float[height, width];
+        var shiftY = height / 2 - peakY;
+        var shiftX = width / 2 - peakX;
+        for (var y = 0; y < height; y++)
+        {
+            for (var x = 0; x < width; x++)
+            {
+                var sourceY = ((y - shiftY) % height + height) % height;
+                var sourceX = ((x - shiftX) % width + width) % width;
+                shifted[y, x] = centered[sourceY, sourceX];
+            }
+        }
+
+        return shifted;
+    }
+
     public (double Min, double Max) ClampRange((double Min, double Max) bounds, double min, double max)
     {
         var fallback = SanitizeRange(bounds.Min, bounds.Max, (0, 1));

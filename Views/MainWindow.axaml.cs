@@ -11,6 +11,7 @@ namespace PiecrustAnalyser.CSharp.Views;
 public partial class MainWindow : Window
 {
     private readonly NativeFileDialogService _nativeFileDialog = new();
+    private MainWindowViewModel? _subscribedVm;
 
     public MainWindow()
     {
@@ -19,6 +20,7 @@ public partial class MainWindow : Window
         DragDrop.SetAllowDrop(this, true);
         AddHandler(DragDrop.DragOverEvent, OnWindowDragOver);
         AddHandler(DragDrop.DropEvent, OnWindowDrop);
+        DataContextChanged += OnDataContextChanged;
     }
 
     private MainWindowViewModel Vm => (MainWindowViewModel)DataContext!;
@@ -58,7 +60,7 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            Vm.StatusText = $"Load failed: {ex.Message}";
+            Vm.ReportRecoverableError("Load Failed", $"Load failed: {ex.Message}");
         }
     }
 
@@ -77,6 +79,8 @@ public partial class MainWindow : Window
     private void OnToggleSimulationClick(object? sender, RoutedEventArgs e) => Vm.ToggleSimulationPlayback();
     private void OnResetSimulationClick(object? sender, RoutedEventArgs e) => Vm.ResetSimulationPlayback();
     private async void OnDiscoverGrowthEquationsClick(object? sender, RoutedEventArgs e) => await Vm.DiscoverGrowthEquationsAsync();
+    private void OnToggleEquationPlaybackClick(object? sender, RoutedEventArgs e) => Vm.ToggleEquationPlayback();
+    private void OnResetEquationPlaybackClick(object? sender, RoutedEventArgs e) => Vm.ResetEquationPlayback();
 
     private void OnPixelSelected(object? sender, PixelSelectedEventArgs e) => Vm.HandleCanvasClick(e.Point);
 
@@ -115,7 +119,7 @@ public partial class MainWindow : Window
         var files = e.DataTransfer.TryGetFiles();
         if (files is null || files.Length == 0)
         {
-            Vm.StatusText = "No files were detected in the drop payload.";
+            Vm.ReportRecoverableError("Drop Failed", "No files were detected in the drop payload.");
             return;
         }
 
@@ -127,7 +131,7 @@ public partial class MainWindow : Window
 
         if (paths.Length == 0)
         {
-            Vm.StatusText = "Dropped items were not local files.";
+            Vm.ReportRecoverableError("Drop Failed", "Dropped items were not local files.");
             return;
         }
 
@@ -148,7 +152,7 @@ public partial class MainWindow : Window
     {
         if (string.IsNullOrWhiteSpace(content))
         {
-            Vm.StatusText = "There is no data to export for this section yet.";
+            Vm.ReportRecoverableError("Nothing To Export", "There is no data to export for this section yet.");
             return;
         }
 
@@ -179,5 +183,72 @@ public partial class MainWindow : Window
         if (string.IsNullOrWhiteSpace(path)) return;
         await File.WriteAllTextAsync(path, content);
         Vm.StatusText = $"Saved {label} to {Path.GetFileName(path)}";
+    }
+
+    private void OnDataContextChanged(object? sender, EventArgs e)
+    {
+        if (_subscribedVm is not null)
+        {
+            _subscribedVm.UserAlertRequested -= OnUserAlertRequested;
+        }
+
+        _subscribedVm = DataContext as MainWindowViewModel;
+        if (_subscribedVm is not null)
+        {
+            _subscribedVm.UserAlertRequested += OnUserAlertRequested;
+        }
+    }
+
+    private async void OnUserAlertRequested(object? sender, UserAlertRequestedEventArgs e)
+    {
+        var dialog = new Window
+        {
+            Title = e.Title,
+            Width = 480,
+            MinWidth = 420,
+            SizeToContent = SizeToContent.Height,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            CanResize = false,
+            Background = Avalonia.Media.Brush.Parse("#161008"),
+            Foreground = Avalonia.Media.Brush.Parse("#ead9bf"),
+            Content = new Border
+            {
+                Padding = new Avalonia.Thickness(18),
+                Child = new StackPanel
+                {
+                    Spacing = 14,
+                    Children =
+                    {
+                        new TextBlock
+                        {
+                            Text = e.Title,
+                            FontSize = 18,
+                            FontWeight = Avalonia.Media.FontWeight.SemiBold,
+                            Foreground = Avalonia.Media.Brush.Parse("#f0c978"),
+                            TextWrapping = Avalonia.Media.TextWrapping.Wrap
+                        },
+                        new TextBlock
+                        {
+                            Text = e.Message,
+                            TextWrapping = Avalonia.Media.TextWrapping.Wrap
+                        },
+                        new Button
+                        {
+                            Content = "OK",
+                            HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right,
+                            MinWidth = 90
+                        }
+                    }
+                }
+            }
+        };
+
+        if (dialog.Content is Border { Child: StackPanel { Children.Count: > 0 } panel } &&
+            panel.Children[^1] is Button button)
+        {
+            button.Click += (_, _) => dialog.Close();
+        }
+
+        await dialog.ShowDialog(this);
     }
 }

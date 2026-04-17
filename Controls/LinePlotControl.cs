@@ -10,7 +10,16 @@ public sealed class LinePlotControl : Control
 {
     static LinePlotControl()
     {
-        AffectsRender<LinePlotControl>(SeriesProperty, TitleProperty, XAxisLabelProperty, YAxisLabelProperty, LightThemeProperty, FixedYMinProperty, FixedYMaxProperty);
+        AffectsRender<LinePlotControl>(
+            SeriesProperty,
+            TitleProperty,
+            XAxisLabelProperty,
+            YAxisLabelProperty,
+            LightThemeProperty,
+            FixedXMinProperty,
+            FixedXMaxProperty,
+            FixedYMinProperty,
+            FixedYMaxProperty);
     }
 
     public static readonly StyledProperty<IReadOnlyList<PolylineSeries>?> SeriesProperty =
@@ -23,6 +32,10 @@ public sealed class LinePlotControl : Control
         AvaloniaProperty.Register<LinePlotControl, string>(nameof(YAxisLabel), string.Empty);
     public static readonly StyledProperty<bool> LightThemeProperty =
         AvaloniaProperty.Register<LinePlotControl, bool>(nameof(LightTheme));
+    public static readonly StyledProperty<double> FixedXMinProperty =
+        AvaloniaProperty.Register<LinePlotControl, double>(nameof(FixedXMin), double.NaN);
+    public static readonly StyledProperty<double> FixedXMaxProperty =
+        AvaloniaProperty.Register<LinePlotControl, double>(nameof(FixedXMax), double.NaN);
     public static readonly StyledProperty<double> FixedYMinProperty =
         AvaloniaProperty.Register<LinePlotControl, double>(nameof(FixedYMin), double.NaN);
     public static readonly StyledProperty<double> FixedYMaxProperty =
@@ -56,6 +69,18 @@ public sealed class LinePlotControl : Control
     {
         get => GetValue(LightThemeProperty);
         set => SetValue(LightThemeProperty, value);
+    }
+
+    public double FixedXMin
+    {
+        get => GetValue(FixedXMinProperty);
+        set => SetValue(FixedXMinProperty, value);
+    }
+
+    public double FixedXMax
+    {
+        get => GetValue(FixedXMaxProperty);
+        set => SetValue(FixedXMaxProperty, value);
     }
 
     public double FixedYMin
@@ -95,8 +120,8 @@ public sealed class LinePlotControl : Control
         }
 
         var allPoints = series.SelectMany(s => s.Points).ToArray();
-        var minX = allPoints.Min(p => p.X);
-        var maxX = allPoints.Max(p => p.X);
+        var minX = double.IsFinite(FixedXMin) ? FixedXMin : allPoints.Min(p => p.X);
+        var maxX = double.IsFinite(FixedXMax) ? FixedXMax : allPoints.Max(p => p.X);
         var minY = double.IsFinite(FixedYMin) ? FixedYMin : allPoints.Min(p => p.Y);
         var maxY = double.IsFinite(FixedYMax) ? FixedYMax : allPoints.Max(p => p.Y);
         if (!(maxX > minX)) maxX = minX + 1;

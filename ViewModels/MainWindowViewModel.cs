@@ -10,8 +10,25 @@ using PiecrustAnalyser.CSharp.Services;
 
 namespace PiecrustAnalyser.CSharp.ViewModels;
 
+public sealed class ActivityLogEntry
+{
+    public required string Level { get; init; }
+    public required string TimestampText { get; init; }
+    public required string Message { get; init; }
+    public required string AccentHex { get; init; }
+}
+
+public sealed class UserAlertRequestedEventArgs : EventArgs
+{
+    public required string Title { get; init; }
+    public required string Message { get; init; }
+}
+
 public sealed partial class MainWindowViewModel : ViewModelBase
 {
+    private const double GoodEquationRmseThresholdNm = 30.0;
+    private const double FailEquationRmseThresholdNm = 50.0;
+    private const int MaxVisibleLogEntries = 60;
     private readonly FileLoadingService _fileLoading = new();
     private readonly PreviewBitmapService _previewBitmapService = new();
     private readonly HeightMapDisplayService _heightMapDisplay = new();
@@ -20,17 +37,24 @@ public sealed partial class MainWindowViewModel : ViewModelBase
     private readonly EquationDiscoveryService _equationDiscovery = new();
     private readonly SessionPersistenceService _sessionPersistence = new();
     private readonly DispatcherTimer _simulationTimer;
+    private readonly DispatcherTimer _equationPlaybackTimer;
     private SurfaceSimulationResult? _surfaceSimulationCache;
     private SupervisedGrowthModel? _supervisedGrowthModel;
     private EquationDiscoveryResult? _equationDiscoveryResult;
     private IReadOnlyList<SimulationEquationCandidate> _simulationEquationCandidates = Array.Empty<SimulationEquationCandidate>();
+    private SimulationPlaybackModel? _subscribedPlaybackModel;
     private bool _suspendSessionPersistence;
     private bool _syncingSelectedDisplayControls;
+    private string? _lastLoggedStatusText;
 
     public IReadOnlyList<string> ConditionOptions { get; } = new[] { "unassigned", "control", "treated" };
     public IReadOnlyList<string> StageOptions { get; } = new[] { "early", "middle", "late" };
     public IReadOnlyList<string> DisplayModeOptions { get; } = new[] { "auto", "full", "fixed" };
     public ObservableCollection<PiecrustFileState> Files { get; } = new();
+    public ObservableCollection<ActivityLogEntry> ActivityLogs { get; } = new();
+    public string SessionLogPath { get; } = Path.Combine(Path.GetTempPath(), "piecrust-analyser-csharp-session.log");
+    public string SessionLogCaption => $"Session log: {Path.GetFileName(SessionLogPath)}";
+    public event EventHandler<UserAlertRequestedEventArgs>? UserAlertRequested;
 
     [ObservableProperty] private PiecrustFileState? selectedFile;
     [ObservableProperty] private int selectedTabIndex;
@@ -72,42 +96,56 @@ public sealed partial class MainWindowViewModel : ViewModelBase
     [ObservableProperty] private string currentCompromiseText = "Compromise: -";
     [ObservableProperty] private string compromiseMethodText = "Compromise score uses guided height as addition and guided width + roughness as removal. Untreated controls act as the biological reference group.";
     [ObservableProperty] private string currentProfileXAxisLabel = "x [nm]";
-    [ObservableProperty] private string currentProfileYAxisLabel = "y [nm]";
+    [ObservableProperty] private string currentProfileYAxisLabel = "Height above local baseline [nm]";
     [ObservableProperty] private string evolutionXAxisLabel = "Relative lateral position [% of extracted profile]";
-    [ObservableProperty] private string evolutionYAxisLabel = "Baseline-shifted height [nm]";
+    [ObservableProperty] private string evolutionYAxisLabel = "Height above local baseline [nm]";
     [ObservableProperty] private string selectedStageHintText = "Stage is auto-classified on load, but you can change it manually.";
     [ObservableProperty] private string currentCorridorWidthOverlayText = "Corridor: -";
     [ObservableProperty] private PiecrustFileState? simulationStartFile;
     [ObservableProperty] private PiecrustFileState? simulationEndFile;
     [ObservableProperty] private double simulationProgress;
     [ObservableProperty] private bool isSimulationPlaying;
-    [ObservableProperty] private string simulationXAxisLabel = "Aligned x [nm]";
-    [ObservableProperty] private string simulationYAxisLabel = "Simulated height [nm]";
+    [ObservableProperty] private string simulationXAxisLabel = "Centered x [nm]";
+    [ObservableProperty] private string simulationYAxisLabel = "Height above local baseline [nm]";
     [ObservableProperty] private string simulationStatusText = "Select start and end reference files to run the full 2D growth simulation.";
     [ObservableProperty] private string supervisedModelStatusText = "Supervised ML status: no learned examples yet.";
     [ObservableProperty] private string simulationReferenceSummaryText = "Ordered references: -";
     [ObservableProperty] private string simulationSurfaceMetaText = "Surface frame: -";
-    [ObservableProperty] private string simulationSurfaceXAxisLabel = "Aligned x [nm]";
+    [ObservableProperty] private string simulationSurfaceXAxisLabel = "Centered x [nm]";
     [ObservableProperty] private string simulationSurfaceYAxisLabel = "Aligned y [nm]";
     [ObservableProperty] private WriteableBitmap? simulationSurfaceBitmap;
     [ObservableProperty] private IReadOnlyList<PolylineSeries> simulationSeries = Array.Empty<PolylineSeries>();
-    [ObservableProperty] private string simulationPlotLegendText = "Dotted = evolving cross-section | Solid = bimodal Gaussian fit";
+    [ObservableProperty] private string simulationPlotLegendText = "Dotted = centered evolving cross-section | Solid = polynomial-in-time bimodal Gaussian fit";
+    [ObservableProperty] private double simulationPlotFixedXMin = double.NaN;
+    [ObservableProperty] private double simulationPlotFixedXMax = double.NaN;
     [ObservableProperty] private double simulationPlotFixedYMin = double.NaN;
     [ObservableProperty] private double simulationPlotFixedYMax = double.NaN;
-    [ObservableProperty] private string equationDiscoveryStatusText = "Use guided, stage-labelled profiles to discover a family of pseudo-time progression equations.";
-    [ObservableProperty] private string equationDiscoveryMetaText = "Pseudo-time tau is an ordered latent progression variable derived from stage labels, not real clock time.";
-    [ObservableProperty] private string equationDiscoveryStageMappingText = "Stage anchors: early = 0.00, middle = 0.50, late = 1.00";
-    [ObservableProperty] private string equationDiscoveryProfileModeText = "Current reduced model: z(s, tau), where s is aligned centreline position extracted from the original x-y-z AFM surface.";
-    [ObservableProperty] private string equationDiscoveryOverlayLegendText = "Stage colours: Early = green, Middle = amber, Late = red. Solid lines = observed AFM stage profiles z(s). Dashed lines = reconstructed z(s, tau) profiles from the top-ranked candidate at the matching stage anchors.";
-    [ObservableProperty] private string equationDiscoveryProgressionLegendText = "Reconstructed pseudo-time progression of z(s, tau): the colours move from green near Early (tau≈0), through amber near Middle, toward red near Late (tau≈1).";
-    [ObservableProperty] private string equationDiscoveryTermGuideText = "Term guide: z = AFM height, s = aligned centreline position from x-y-z AFM data, dz/ds = slope, d2z/ds2 = curvature, d3z/ds3 and d4z/ds4 = higher-order shape change, tau = latent growth progression rather than real time.";
-    [ObservableProperty] private string equationDiscoveryXAxisLabel = "Aligned centreline position s [nm]";
-    [ObservableProperty] private string equationDiscoveryYAxisLabel = "Height z [nm]";
+    [ObservableProperty] private string equationDiscoveryStatusText = "Use guided, sequence-ordered references to rank bimodal Gaussian feature-ODE systems and reconstruct tramline splitting over pseudo-time.";
+    [ObservableProperty] private string equationDiscoveryMetaText = "Sequence order defines pseudo-time tau, while early/middle/late remain descriptive labels only.";
+    [ObservableProperty] private string equationDiscoveryStageMappingText = "Sequence anchors: -";
+    [ObservableProperty] private string equationDiscoveryProfileModeText = "Current visual model: each image contributes 10 equidistant perpendicular guided profiles (corridor width +20%), those 10 profiles are averaged into one representative image profile, and playback is reconstructed from bimodal Gaussian feature dynamics.";
+    [ObservableProperty] private string equationDiscoveryOverlayLegendText = "Colours follow sequence-derived pseudo-time from green to red. Solid lines = baseline-corrected reference profiles. Dashed lines = bimodal Gaussian reconstructions at the same ordered anchors.";
+    [ObservableProperty] private string equationDiscoveryProgressionLegendText = "Bimodal feature-ODE progression over sequence-derived pseudo-time: each curve is reconstructed from the evolving left/right peak amplitudes, widths, and separation.";
+    [ObservableProperty] private string equationDiscoveryTermGuideText = "Term guide covers both discovered model families: bimodal Gaussian feature dynamics for playback and guided-profile field equations built from per-image averaged perpendicular profiles.";
+    [ObservableProperty] private string equationDiscoveryXAxisLabel = "Perpendicular offset from guide centre z [nm]";
+    [ObservableProperty] private string equationDiscoveryYAxisLabel = "Height above local baseline z [nm]";
     [ObservableProperty] private IReadOnlyList<EquationDiscoveryStageProfile> equationDiscoveryStageProfiles = Array.Empty<EquationDiscoveryStageProfile>();
     [ObservableProperty] private IReadOnlyList<EquationTermExplanation> equationTermExplanations = Array.Empty<EquationTermExplanation>();
     [ObservableProperty] private IReadOnlyList<EquationCandidateResult> equationFamily = Array.Empty<EquationCandidateResult>();
     [ObservableProperty] private IReadOnlyList<PolylineSeries> equationOverlaySeries = Array.Empty<PolylineSeries>();
     [ObservableProperty] private IReadOnlyList<PolylineSeries> equationProgressionSeries = Array.Empty<PolylineSeries>();
+    [ObservableProperty] private SimulationPlaybackModel? equationSimulationPlayback;
+    [ObservableProperty] private IReadOnlyList<PolylineSeries> equationPlaybackSeries = Array.Empty<PolylineSeries>();
+    [ObservableProperty] private double equationPlaybackFrameMaximum = 1;
+    [ObservableProperty] private double equationPlaybackFramePosition;
+    [ObservableProperty] private string equationPlaybackStatusText = "Run equation discovery to enable playback.";
+    [ObservableProperty] private string equationPlaybackTauText = "Tau: -";
+    [ObservableProperty] private string equationPlaybackHeightText = "Height: -";
+    [ObservableProperty] private string equationPlaybackWidthText = "Width: -";
+    [ObservableProperty] private double equationPlaybackFixedXMin = double.NaN;
+    [ObservableProperty] private double equationPlaybackFixedXMax = double.NaN;
+    [ObservableProperty] private double equationPlaybackFixedYMin = double.NaN;
+    [ObservableProperty] private double equationPlaybackFixedYMax = double.NaN;
 
     public MainWindowViewModel()
     {
@@ -116,6 +154,12 @@ public sealed partial class MainWindowViewModel : ViewModelBase
             Interval = TimeSpan.FromMilliseconds(140)
         };
         _simulationTimer.Tick += OnSimulationTick;
+        _equationPlaybackTimer = new DispatcherTimer
+        {
+            Interval = TimeSpan.FromMilliseconds(120)
+        };
+        _equationPlaybackTimer.Tick += OnEquationPlaybackTick;
+        AddLogEntry("info", "Pie Crust Analyser session started.");
     }
 
     private sealed class SimulationEquationCandidate
@@ -127,6 +171,186 @@ public sealed partial class MainWindowViewModel : ViewModelBase
         public required double[] RightAmplitudeCoefficients { get; init; }
         public required double[] RightSigmaCoefficients { get; init; }
         public required double[] SeparationCoefficients { get; init; }
+    }
+
+    private void AddLogEntry(string level, string message)
+    {
+        if (string.IsNullOrWhiteSpace(message)) return;
+        var normalizedLevel = string.IsNullOrWhiteSpace(level) ? "info" : level.Trim().ToLowerInvariant();
+        var accent = normalizedLevel switch
+        {
+            "error" => "#d97f7f",
+            "warning" => "#f0c978",
+            "status" => "#d8b07a",
+            _ => "#bca37d"
+        };
+
+        ActivityLogs.Insert(0, new ActivityLogEntry
+        {
+            Level = normalizedLevel.ToUpperInvariant(),
+            TimestampText = DateTime.Now.ToString("HH:mm:ss", CultureInfo.InvariantCulture),
+            Message = message.Trim(),
+            AccentHex = accent
+        });
+        while (ActivityLogs.Count > MaxVisibleLogEntries)
+        {
+            ActivityLogs.RemoveAt(ActivityLogs.Count - 1);
+        }
+
+        try
+        {
+            File.AppendAllText(
+                SessionLogPath,
+                $"[{DateTime.Now:O}] {normalizedLevel.ToUpperInvariant()}: {message.Trim()}{Environment.NewLine}");
+        }
+        catch
+        {
+            // Keep the UI responsive even if session log persistence fails.
+        }
+    }
+
+    private void RaiseUserAlert(string title, string message)
+    {
+        AddLogEntry("error", message);
+        StatusText = message;
+        UserAlertRequested?.Invoke(this, new UserAlertRequestedEventArgs
+        {
+            Title = title,
+            Message = message
+        });
+    }
+
+    public void ReportRecoverableError(string title, string message) => RaiseUserAlert(title, message);
+
+    private bool EnsureSelectedFile(string actionName)
+    {
+        if (SelectedFile is not null) return true;
+        RaiseUserAlert(
+            "No File Selected",
+            $"{actionName} needs a selected file first. Load or pick a file from the Files list, then try again.");
+        return false;
+    }
+
+    private static bool HasUsableGuide(PiecrustFileState? file) =>
+        file is not null &&
+        file.UseManualGuide &&
+        file.GuideLineFinished &&
+        file.GuidePoints.Count >= 2 &&
+        file.HeightData.Length > 0;
+
+    private bool EnsureGuideReady(string actionName)
+    {
+        if (!EnsureSelectedFile(actionName)) return false;
+        if (HasUsableGuide(SelectedFile)) return true;
+        RaiseUserAlert(
+            "Guide Required",
+            $"{actionName} needs a finished centre line on the selected file. Use Start Centre Line, place at least two guide points, then click Finish Centre Line.");
+        return false;
+    }
+
+    private bool EnsureDistinctSimulationReferences(string actionName)
+    {
+        if (SimulationStartFile is null || SimulationEndFile is null)
+        {
+            RaiseUserAlert(
+                "Reference Files Needed",
+                $"{actionName} needs both a start reference and an end reference. Choose two ordered files in the Growth Model tab first.");
+            return false;
+        }
+
+        if (ReferenceEquals(SimulationStartFile, SimulationEndFile))
+        {
+            RaiseUserAlert(
+                "Different References Needed",
+                $"{actionName} needs two different reference files so the model has a real progression interval to simulate.");
+            return false;
+        }
+
+        return true;
+    }
+
+    private bool TryBuildEquationDiscoveryInputs(
+        out EquationDiscoveryProfileInput[] profileInputs,
+        out int[] orderedSequences)
+    {
+        var missingSequence = Files
+            .Where(file => file.SequenceOrder <= 0)
+            .Select(file => file.Name)
+            .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        var duplicateSequenceGroups = Files
+            .Where(file => file.SequenceOrder > 0)
+            .GroupBy(file => file.SequenceOrder)
+            .Where(group => group.Count() > 1)
+            .OrderBy(group => group.Key)
+            .ToArray();
+        var preparedInputs = Files
+            .Select(file => new
+            {
+                File = file,
+                Input = _analysis.BuildEquationDiscoveryProfileInput(file)
+            })
+            .ToArray();
+        var guidePreparedFailures = preparedInputs
+            .Where(item => HasUsableGuide(item.File) && item.Input is null)
+            .Select(item => item.File.Name)
+            .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        profileInputs = preparedInputs
+            .Where(item => item.Input is not null)
+            .Select(item => item.Input!)
+            .Where(input => input.SequenceOrder > 0)
+            .OrderBy(input => input.SequenceOrder)
+            .ThenBy(input => input.FileName, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        orderedSequences = profileInputs
+            .Select(input => input.SequenceOrder)
+            .Distinct()
+            .OrderBy(sequence => sequence)
+            .ToArray();
+
+        var problems = new List<string>();
+        if (missingSequence.Length > 0)
+        {
+            problems.Add("Missing sequence number: " + string.Join(", ", missingSequence));
+        }
+
+        if (duplicateSequenceGroups.Length > 0)
+        {
+            problems.Add("Duplicate sequence anchors: " + string.Join(
+                " | ",
+                duplicateSequenceGroups.Select(group =>
+                    $"#{group.Key} -> {string.Join(", ", group.Select(file => file.Name).OrderBy(name => name, StringComparer.OrdinalIgnoreCase))}")));
+        }
+
+        if (guidePreparedFailures.Length > 0)
+        {
+            problems.Add("Guides present but not usable for discovery: " + string.Join(", ", guidePreparedFailures));
+        }
+
+        if (profileInputs.Length < 2 || orderedSequences.Length < 2)
+        {
+            var missingGuides = Files
+                .Where(file => !HasUsableGuide(file))
+                .Select(file => file.Name)
+                .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            if (missingGuides.Length > 0)
+            {
+                problems.Add("Missing or unfinished centre line: " + string.Join(", ", missingGuides));
+            }
+
+            problems.Add("Equation discovery needs at least two guided files across two distinct sequence anchors.");
+        }
+
+        if (problems.Count == 0) return true;
+
+        RaiseUserAlert(
+            "Equation Discovery Setup Incomplete",
+            string.Join(Environment.NewLine, problems));
+        ClearEquationDiscoveryResults("Equation discovery is waiting for complete guides and sequence anchors.");
+        return false;
     }
 
     public async Task InitializeAsync()
@@ -271,6 +495,14 @@ public sealed partial class MainWindowViewModel : ViewModelBase
         PersistSessionIfPossible();
     }
 
+    partial void OnStatusTextChanged(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return;
+        if (string.Equals(value, _lastLoggedStatusText, StringComparison.Ordinal)) return;
+        _lastLoggedStatusText = value;
+        AddLogEntry("status", value);
+    }
+
     public void RemoveSelectedFile()
     {
         if (SelectedFile is null) return;
@@ -300,7 +532,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase
 
     public void BeginProfileLineSelection()
     {
-        if (SelectedFile is null) return;
+        if (!EnsureSelectedFile("Line profile marking")) return;
         IsGuideDrawing = false;
         IsMarkingProfileLine = true;
         SelectedFile.ProfileLine.Clear();
@@ -320,7 +552,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase
 
     public void StartGuideLine()
     {
-        if (SelectedFile is null) return;
+        if (!EnsureSelectedFile("Centre-line drawing")) return;
         IsMarkingProfileLine = false;
         IsGuideDrawing = true;
         SelectedFile.GuidePoints.Clear();
@@ -331,10 +563,19 @@ public sealed partial class MainWindowViewModel : ViewModelBase
 
     public void FinishGuideLine()
     {
-        if (SelectedFile is null) return;
+        if (!EnsureSelectedFile("Finishing the centre line")) return;
         SelectedFile.GuideLineFinished = SelectedFile.GuidePoints.Count >= 2;
         IsGuideDrawing = false;
-        StatusText = SelectedFile.GuideLineFinished ? "Centre line finished. Run guided extraction next." : "Add at least two guide points first.";
+        if (SelectedFile.GuideLineFinished)
+        {
+            StatusText = "Centre line finished. Run guided extraction next.";
+        }
+        else
+        {
+            RaiseUserAlert(
+                "More Guide Points Needed",
+                "Finish Centre Line needs at least two guide points. Click along the centre line again, then press Finish Centre Line.");
+        }
         PersistSessionIfPossible();
     }
 
@@ -386,14 +627,21 @@ public sealed partial class MainWindowViewModel : ViewModelBase
 
     public void RunGuidedExtraction()
     {
-        if (SelectedFile is null) return;
+        if (!EnsureGuideReady("Guided extraction")) return;
         ClearEquationDiscoveryResults();
         SyncSelectedFileDisplayMetrics();
         SelectedFile.GuidedSummary = _analysis.ExtractGuidedSummary(SelectedFile);
         RefreshDerivedState();
-        StatusText = SelectedFile.GuidedSummary is null
-            ? "Guided extraction needs a finished centre line."
-            : $"Guided extraction complete for {SelectedFile.Name}.";
+        if (SelectedFile.GuidedSummary is null)
+        {
+            RaiseUserAlert(
+                "Guided Extraction Failed",
+                $"The guide on {SelectedFile.Name} could not be converted into a usable extraction. Check that the centre line spans the piecrust region and try again.");
+        }
+        else
+        {
+            StatusText = $"Guided extraction complete for {SelectedFile.Name}.";
+        }
         PersistSessionIfPossible();
     }
 
@@ -558,68 +806,81 @@ public sealed partial class MainWindowViewModel : ViewModelBase
 
     public async Task DiscoverGrowthEquationsAsync()
     {
-        var profileInputs = Files
-            .Select(file => _analysis.BuildEquationDiscoveryProfileInput(file))
-            .Where(input => input is not null)
-            .Cast<EquationDiscoveryProfileInput>()
-            .Where(input => !string.IsNullOrWhiteSpace(input.Stage))
-            .ToArray();
-
-        var stageCount = profileInputs
-            .Select(input => input.Stage)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .Count();
-
-        if (profileInputs.Length < 2 || stageCount < 2)
+        if (!TryBuildEquationDiscoveryInputs(out var profileInputs, out var orderedSequences))
         {
-            ClearEquationDiscoveryResults("Equation discovery needs at least two guided profiles spanning at least two ordered stages.");
             StatusText = EquationDiscoveryStatusText;
             return;
         }
 
         try
         {
-            EquationDiscoveryStatusText = $"Discovering pseudo-time growth equations from {profileInputs.Length} guided profile(s)...";
-            EquationDiscoveryMetaText = "Preparing centreline-aligned AFM profiles, conservative derivatives, sparse candidate libraries, and pseudo-time sensitivity checks.";
+            EquationDiscoveryStatusText = $"Discovering sequence-ordered growth equations from {profileInputs.Length} guided profile(s)...";
+            EquationDiscoveryMetaText = "Preparing centreline-aligned AFM profiles, bimodal Gaussian fits, interpolated feature trajectories, and a feature-ODE playback family.";
             StatusText = EquationDiscoveryStatusText;
+            var sequenceMapping = BuildSequencePseudoTimeMapping(orderedSequences);
+            var requestInputs = profileInputs
+                .Select(input => BuildSequenceOrderedEquationDiscoveryInput(input))
+                .ToArray();
 
             var request = new EquationDiscoveryRequest
             {
                 SampleId = $"piecrust-session-{DateTime.UtcNow:yyyyMMddHHmmss}",
-                TimeMode = "pseudotime_stage_ordered",
+                TimeMode = "pseudotime_sequence_ordered",
                 ProfileMode = "centerline_arc_length_profile",
-                StageMapping = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase)
-                {
-                    ["early"] = 0.0,
-                    ["middle"] = 0.5,
-                    ["late"] = 1.0
-                },
+                StageMapping = sequenceMapping,
                 Options = new EquationDiscoveryOptions
                 {
                     SpatialGridCount = 220,
+                    SpatialHalfRangeNm = 90.0,
                     BootstrapCount = Math.Clamp(profileInputs.Length * 6, 18, 36),
                     StageJitter = 0.10,
                     SampleSpacingNm = 1.0,
                     DerivativeMode = "savitzky_golay",
-                    SparseBackend = "stlsq"
+                    SparseBackend = "stlsq",
+                    UseNormalizedTau = true,
+                    PerImagePerpendicularProfileCount = 10,
+                    GuideProfileWidthExpansionFraction = 0.20
                 },
-                Files = profileInputs
+                Files = requestInputs
             };
 
             var result = await _equationDiscovery.DiscoverAsync(request).ConfigureAwait(true);
             if (result is null)
             {
-                ClearEquationDiscoveryResults("Equation discovery did not return a result for the current guided stage set.");
+                if (ApplySimulationAlignedEquationFamilyIfAvailable())
+                {
+                    StatusText = $"Equation discovery complete. Showing {EquationFamily.Count} simulation-aligned candidate equation(s) over sequence-derived progression.";
+                    return;
+                }
+
+                ClearEquationDiscoveryResults("Equation discovery did not return a result for the current ordered guided set.");
                 StatusText = EquationDiscoveryStatusText;
                 return;
             }
 
             ApplyEquationDiscoveryResult(result);
-            ApplySimulationAlignedEquationFamilyIfAvailable();
-            StatusText = $"Equation discovery complete. Ranked {EquationFamily.Count} pseudo-time candidate equation(s).";
+            StatusText = $"Equation discovery complete. Ranked {EquationFamily.Count} bimodal feature-ODE candidate(s) using individual guided profiles.";
+        }
+        catch (EquationDiscoveryStageValidationException ex)
+        {
+            ClearEquationDiscoveryResults($"Equation discovery stopped by stage validation: {ex.Message}");
+            StatusText = EquationDiscoveryStatusText;
+        }
+        catch (OperationCanceledException ex)
+        {
+            ClearEquationDiscoveryResults(string.IsNullOrWhiteSpace(ex.Message)
+                ? "Equation discovery was cancelled."
+                : ex.Message);
+            StatusText = EquationDiscoveryStatusText;
         }
         catch (Exception ex)
         {
+            if (ApplySimulationAlignedEquationFamilyIfAvailable())
+            {
+                StatusText = $"Equation discovery recovered with {EquationFamily.Count} simulation-aligned candidate equation(s) after the generic solver failed.";
+                return;
+            }
+
             ClearEquationDiscoveryResults($"Equation discovery failed: {ex.Message}");
             StatusText = EquationDiscoveryStatusText;
         }
@@ -726,6 +987,25 @@ public sealed partial class MainWindowViewModel : ViewModelBase
         PersistSessionIfPossible();
     }
 
+    partial void OnEquationPlaybackFramePositionChanged(double value)
+    {
+        if (EquationSimulationPlayback is null || EquationSimulationPlayback.Profiles.Count == 0) return;
+        var clamped = Math.Clamp((int)Math.Round(value), 0, EquationSimulationPlayback.Profiles.Count - 1);
+        if (Math.Abs(value - clamped) > 1e-6)
+        {
+            EquationPlaybackFramePosition = clamped;
+            return;
+        }
+
+        if (EquationSimulationPlayback.CurrentFrameIndex != clamped)
+        {
+            EquationSimulationPlayback.CurrentFrameIndex = clamped;
+            return;
+        }
+
+        RefreshEquationPlaybackDisplay();
+    }
+
     private void RefreshDerivedState()
     {
         SyncSelectedFileDisplayMetrics();
@@ -765,75 +1045,325 @@ public sealed partial class MainWindowViewModel : ViewModelBase
         _equationDiscoveryResult = result;
         EquationDiscoveryStageProfiles = result.StageProfiles
             .OrderBy(stage => stage.Tau)
+            .Select(stage => new EquationDiscoveryStageProfile
+            {
+                Stage = FormatPseudoTimeAnchorLabel(stage.Stage),
+                Tau = stage.Tau,
+                SampleCount = stage.SampleCount,
+                MeanHeightNm = stage.MeanHeightNm,
+                HeightStdNm = stage.HeightStdNm,
+                MeanWidthNm = stage.MeanWidthNm,
+                WidthStdNm = stage.WidthStdNm,
+                MeanArea = stage.MeanArea,
+                MeanRoughnessNm = stage.MeanRoughnessNm
+            })
             .ToArray();
         EquationFamily = result.EquationFamily
             .OrderBy(candidate => candidate.Rank)
             .ToArray();
         EquationDiscoveryStatusText = result.StatusText;
-        EquationDiscoveryMetaText = result.MetaModelSummary;
+        EquationDiscoveryMetaText = result.StageValidation is { ValidatorAvailable: true } validation
+            ? $"{result.MetaModelSummary} Stage validation confidence: {validation.ConfidenceScore:P0} ({validation.Recommendation})."
+            : result.MetaModelSummary;
+        var tauModeText = result.UseNormalizedTau
+            ? "Tau mode: normalized [0, 1]."
+            : result.TRange.Count >= 2
+                ? $"Tau mode: sequence index range {result.TRange[0]:F2} to {result.TRange[1]:F2}."
+                : "Tau mode: raw sequence-index progression.";
         EquationDiscoveryProfileModeText =
-            "Current reduced model: z(s, tau), where s is aligned centreline position extracted from the original x-y-z AFM surface. " +
-            "Tau is a latent progression variable inferred from ordered stage labels, not real time.";
+            "Current visual model: every playback frame is reconstructed from two Gaussian tramline peaks fitted with a Gaussian-mixture-based profile model. " +
+            "Each image contributes 10 equidistant perpendicular guided profiles (corridor width +20%), those 10 profiles are averaged into one representative image profile, and the discovered ODE system evolves A1, A2, D, sigma1, and sigma2 over the inferred progression axis.";
         EquationDiscoveryStageMappingText = "Pseudo-time anchors: " + string.Join("  |  ",
             result.StageMapping
                 .OrderBy(entry => entry.Value)
-                .Select(entry => $"{ToStageLabel(entry.Key)} = {entry.Value:F2}"));
+                .Select(entry => $"{FormatPseudoTimeAnchorLabel(entry.Key)} = {entry.Value:F2}")) +
+            $"  |  {tauModeText}";
         EquationDiscoveryTermGuideText =
-            "Term guide: z is AFM height, s is aligned centreline position from the original x-y-z AFM surface, dz/ds is the local slope, " +
-            "d2z/ds2 is curvature, d3z/ds3 and d4z/ds4 capture higher-order shape change, and tau is latent growth progression rather than real time.";
+            "Term guide now combines both model families: the bimodal Gaussian feature-evolution system used for playback and the guided-profile field equation discovered from per-image averaged perpendicular profiles.";
         EquationDiscoveryOverlayLegendText =
-            "Stage colours: Early = green, Middle = amber, Late = red. Solid lines = observed AFM stage profiles z(s). " +
-            "Dashed lines = reconstructed z(s, tau) profiles from the top-ranked candidate at the matching stage anchors.";
+            "Colours follow sequence-derived pseudo-time from green (earliest anchor) to red (latest anchor). Solid lines = stage-averaged observed AFM profiles z(s). " +
+            "Dashed lines = bimodal Gaussian reconstructions evaluated at the matching ordered anchors.";
         EquationDiscoveryProgressionLegendText =
-            "Reconstructed pseudo-time progression of z(s, tau): the colours move from green near Early (tau≈0), through amber near Middle, toward red near Late (tau≈1).";
-        EquationDiscoveryXAxisLabel = string.IsNullOrWhiteSpace(result.SpatialCoordinateLabel) ? "Aligned centreline position s [nm]" : result.SpatialCoordinateLabel;
-        EquationDiscoveryYAxisLabel = string.IsNullOrWhiteSpace(result.HeightLabel) ? "Height z [nm]" : result.HeightLabel;
-        EquationTermExplanations = BuildGenericEquationTermExplanations();
+            "Reconstructed progression of h(z, tau): each coloured curve comes directly from the discovered bimodal feature ODE system, while the equation family also includes a guided-profile PDE-style law for the per-image averaged profiles.";
+        EquationDiscoveryXAxisLabel = string.IsNullOrWhiteSpace(result.SpatialCoordinateLabel) ? "Aligned centreline position z [nm]" : result.SpatialCoordinateLabel;
+        EquationDiscoveryYAxisLabel = string.IsNullOrWhiteSpace(result.HeightLabel) ? "Height above local baseline z [nm]" : result.HeightLabel;
+        EquationTermExplanations = BuildEquationTermExplanations(result.EquationFamily);
         EquationOverlaySeries = BuildEquationOverlaySeries(result);
         EquationProgressionSeries = BuildEquationProgressionSeries(result);
+        LoadEquationPlayback(result);
     }
 
     private void ClearEquationDiscoveryResults(string? status = null)
     {
+        StopEquationPlayback();
+        SubscribeEquationPlaybackModel(null);
         _equationDiscoveryResult = null;
         _simulationEquationCandidates = Array.Empty<SimulationEquationCandidate>();
         EquationDiscoveryStageProfiles = Array.Empty<EquationDiscoveryStageProfile>();
         EquationFamily = Array.Empty<EquationCandidateResult>();
         EquationOverlaySeries = Array.Empty<PolylineSeries>();
         EquationProgressionSeries = Array.Empty<PolylineSeries>();
-        EquationDiscoveryStatusText = status ?? "Use guided, stage-labelled profiles to discover a family of pseudo-time progression equations.";
-        EquationDiscoveryMetaText = "Pseudo-time tau is an ordered latent progression variable derived from stage labels, not real clock time.";
-        EquationDiscoveryStageMappingText = "Stage anchors: early = 0.00, middle = 0.50, late = 1.00";
-        EquationDiscoveryProfileModeText = "Current reduced model: z(s, tau), where s is aligned centreline position extracted from the original x-y-z AFM surface.";
-        EquationDiscoveryOverlayLegendText = "Stage colours: Early = green, Middle = amber, Late = red. Solid lines = observed AFM stage profiles z(s). Dashed lines = reconstructed z(s, tau) profiles from the top-ranked candidate at the matching stage anchors.";
-        EquationDiscoveryProgressionLegendText = "Reconstructed pseudo-time progression of z(s, tau): the colours move from green near Early (tau≈0), through amber near Middle, toward red near Late (tau≈1).";
-        EquationDiscoveryTermGuideText = "Term guide: z is AFM height, s is aligned centreline position from the original x-y-z AFM surface, dz/ds is the local slope, d2z/ds2 is curvature, d3z/ds3 and d4z/ds4 capture higher-order shape change, and tau is latent growth progression rather than real time.";
-        EquationDiscoveryXAxisLabel = "Aligned centreline position s [nm]";
-        EquationDiscoveryYAxisLabel = "Height z [nm]";
-        EquationTermExplanations = BuildGenericEquationTermExplanations();
+        EquationPlaybackSeries = Array.Empty<PolylineSeries>();
+        EquationPlaybackFrameMaximum = 1;
+        EquationPlaybackFramePosition = 0;
+        EquationPlaybackTauText = "Tau: -";
+        EquationPlaybackHeightText = "Height: -";
+        EquationPlaybackWidthText = "Width: -";
+        EquationPlaybackFixedXMin = double.NaN;
+        EquationPlaybackFixedXMax = double.NaN;
+        EquationPlaybackFixedYMin = double.NaN;
+        EquationPlaybackFixedYMax = double.NaN;
+        EquationPlaybackStatusText = "Run equation discovery to enable playback.";
+        EquationDiscoveryStatusText = status ?? "Use guided, sequence-ordered references to rank bimodal Gaussian feature-ODE systems and reconstruct tramline splitting over pseudo-time.";
+        EquationDiscoveryMetaText = "Sequence order defines pseudo-time tau, while early/middle/late remain descriptive labels only.";
+        EquationDiscoveryStageMappingText = "Sequence anchors: -";
+        EquationDiscoveryProfileModeText = "Current visual model: each playback frame is reconstructed from two Gaussian tramline peaks whose amplitudes, widths, and separation evolve under a discovered ODE system over normalised tau.";
+        EquationDiscoveryOverlayLegendText = "Colours follow sequence-derived pseudo-time from green to red. Solid lines = baseline-corrected reference profiles. Dashed lines = bimodal Gaussian reconstructions at the same ordered anchors.";
+        EquationDiscoveryProgressionLegendText = "Bimodal feature-ODE progression over sequence-derived pseudo-time: each curve is reconstructed from the evolving left/right peak amplitudes, widths, and separation.";
+        EquationDiscoveryTermGuideText = "Bimodal feature guide: A1 and A2 are left/right peak heights, sigma1 and sigma2 are widths, D is peak separation, mu1 and mu2 are the implied centres, and tau is sequence-derived progression rather than real time.";
+        EquationDiscoveryXAxisLabel = "Aligned centreline position z [nm]";
+        EquationDiscoveryYAxisLabel = "Height above local baseline z [nm]";
+        EquationTermExplanations = Array.Empty<EquationTermExplanation>();
+    }
+
+    public void ToggleEquationPlayback()
+    {
+        if (EquationSimulationPlayback is null || EquationSimulationPlayback.Profiles.Count == 0)
+        {
+            EquationPlaybackStatusText = "No equation playback data is available yet. Run equation discovery first.";
+            return;
+        }
+
+        if (EquationSimulationPlayback.IsPlaying)
+        {
+            StopEquationPlayback();
+            EquationPlaybackStatusText = "Equation playback paused.";
+            RefreshEquationPlaybackDisplay();
+            return;
+        }
+
+        if (EquationSimulationPlayback.CurrentFrameIndex >= EquationSimulationPlayback.Profiles.Count - 1)
+        {
+            EquationSimulationPlayback.CurrentFrameIndex = 0;
+        }
+
+        EquationSimulationPlayback.IsPlaying = true;
+        UpdateEquationPlaybackTimerInterval();
+        _equationPlaybackTimer.Start();
+        EquationPlaybackStatusText = "Playing discovered-equation playback over the inferred progression axis.";
+        RefreshEquationPlaybackDisplay();
+    }
+
+    public void ResetEquationPlayback()
+    {
+        StopEquationPlayback();
+        if (EquationSimulationPlayback is null)
+        {
+            EquationPlaybackStatusText = "No equation playback data is available yet.";
+            RefreshEquationPlaybackDisplay();
+            return;
+        }
+
+        EquationSimulationPlayback.CurrentFrameIndex = 0;
+        EquationPlaybackStatusText = "Equation playback reset to the first pseudo-time frame.";
+        RefreshEquationPlaybackDisplay();
+    }
+
+    private void LoadEquationPlayback(EquationDiscoveryResult result)
+    {
+        StopEquationPlayback();
+        var playback = result.SimulationPlayback;
+        if (playback is null || !playback.Success || playback.Profiles.Count == 0)
+        {
+            SubscribeEquationPlaybackModel(null);
+            EquationPlaybackFixedXMin = double.NaN;
+            EquationPlaybackFixedXMax = double.NaN;
+            EquationPlaybackFixedYMin = double.NaN;
+            EquationPlaybackFixedYMax = double.NaN;
+            EquationPlaybackStatusText = string.IsNullOrWhiteSpace(playback?.Error)
+                ? "Equation discovery completed, but no playback payload was returned."
+                : $"Equation playback unavailable: {playback.Error}";
+            RefreshEquationPlaybackDisplay();
+            return;
+        }
+
+        var model = new SimulationPlaybackModel
+        {
+            TauValues = playback.Tau.ToArray(),
+            SimulatedHeight = playback.SimulatedHeight.ToArray(),
+            SimulatedWidth = playback.SimulatedWidth.ToArray(),
+            Profiles = playback.Profiles.ToArray(),
+            EnvelopeProfiles = playback.EnvelopeProfiles.ToArray(),
+            CurrentFrameIndex = 0,
+            PlaybackSpeed = 1.0,
+            IsPlaying = false
+        };
+        SubscribeEquationPlaybackModel(model);
+        var allPlaybackPoints = model.Profiles
+            .Concat(model.EnvelopeProfiles)
+            .SelectMany(curve => curve.Points)
+            .ToArray();
+        if (allPlaybackPoints.Length > 0)
+        {
+            EquationPlaybackFixedXMin = allPlaybackPoints.Min(point => point.X);
+            EquationPlaybackFixedXMax = allPlaybackPoints.Max(point => point.X);
+            EquationPlaybackFixedYMin = 0;
+            var maxY = Math.Max(
+                playback.SimulatedHeight.DefaultIfEmpty(0).Max(),
+                allPlaybackPoints.Max(point => point.Y));
+            var padding = Math.Max(0.4, maxY * 0.10);
+            EquationPlaybackFixedYMax = maxY + padding;
+        }
+        else
+        {
+            EquationPlaybackFixedXMin = double.NaN;
+            EquationPlaybackFixedXMax = double.NaN;
+            EquationPlaybackFixedYMin = double.NaN;
+            EquationPlaybackFixedYMax = double.NaN;
+        }
+        EquationPlaybackStatusText = string.IsNullOrWhiteSpace(playback.Note)
+            ? "Equation playback is ready. Use Play to animate the discovered profile evolution."
+            : playback.Note;
+        RefreshEquationPlaybackDisplay();
+    }
+
+    private void SubscribeEquationPlaybackModel(SimulationPlaybackModel? model)
+    {
+        if (_subscribedPlaybackModel is not null)
+        {
+            _subscribedPlaybackModel.PropertyChanged -= OnEquationPlaybackModelPropertyChanged;
+        }
+
+        _subscribedPlaybackModel = model;
+        EquationSimulationPlayback = model;
+
+        if (_subscribedPlaybackModel is not null)
+        {
+            _subscribedPlaybackModel.PropertyChanged += OnEquationPlaybackModelPropertyChanged;
+        }
+    }
+
+    private void OnEquationPlaybackModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (sender is not SimulationPlaybackModel model) return;
+        if (e.PropertyName is nameof(SimulationPlaybackModel.PlaybackSpeed))
+        {
+            UpdateEquationPlaybackTimerInterval();
+        }
+
+        if (e.PropertyName is nameof(SimulationPlaybackModel.CurrentFrameIndex) or nameof(SimulationPlaybackModel.PlaybackSpeed))
+        {
+            EquationPlaybackFramePosition = model.CurrentFrameIndex;
+            RefreshEquationPlaybackDisplay();
+        }
+    }
+
+    private void OnEquationPlaybackTick(object? sender, EventArgs e)
+    {
+        if (EquationSimulationPlayback is null || EquationSimulationPlayback.Profiles.Count == 0)
+        {
+            StopEquationPlayback();
+            return;
+        }
+
+        if (EquationSimulationPlayback.CurrentFrameIndex < EquationSimulationPlayback.Profiles.Count - 1)
+        {
+            EquationSimulationPlayback.CurrentFrameIndex++;
+            return;
+        }
+
+        StopEquationPlayback();
+        EquationPlaybackStatusText = "Equation playback finished.";
+        RefreshEquationPlaybackDisplay();
+    }
+
+    private void StopEquationPlayback()
+    {
+        if (_equationPlaybackTimer.IsEnabled) _equationPlaybackTimer.Stop();
+        if (EquationSimulationPlayback is not null) EquationSimulationPlayback.IsPlaying = false;
+    }
+
+    private void UpdateEquationPlaybackTimerInterval()
+    {
+        var speed = Math.Clamp(EquationSimulationPlayback?.PlaybackSpeed ?? 1.0, 0.1, 3.0);
+        _equationPlaybackTimer.Interval = TimeSpan.FromMilliseconds(120.0 / speed);
+    }
+
+    private void RefreshEquationPlaybackDisplay()
+    {
+        if (EquationSimulationPlayback is null || EquationSimulationPlayback.Profiles.Count == 0)
+        {
+            EquationPlaybackSeries = Array.Empty<PolylineSeries>();
+            EquationPlaybackFrameMaximum = 1;
+            EquationPlaybackFramePosition = 0;
+            EquationPlaybackTauText = "Tau: -";
+            EquationPlaybackHeightText = "Height: -";
+            EquationPlaybackWidthText = "Width: -";
+            return;
+        }
+
+        var index = Math.Clamp(EquationSimulationPlayback.CurrentFrameIndex, 0, EquationSimulationPlayback.Profiles.Count - 1);
+        if (EquationSimulationPlayback.CurrentFrameIndex != index)
+        {
+            EquationSimulationPlayback.CurrentFrameIndex = index;
+            return;
+        }
+
+        EquationPlaybackFrameMaximum = Math.Max(0, EquationSimulationPlayback.Profiles.Count - 1);
+        if (Math.Abs(EquationPlaybackFramePosition - index) > 1e-6) EquationPlaybackFramePosition = index;
+
+        var curve = EquationSimulationPlayback.Profiles[index];
+        var envelopeCurve = index < EquationSimulationPlayback.EnvelopeProfiles.Count
+            ? EquationSimulationPlayback.EnvelopeProfiles[index]
+            : null;
+        if (curve.Points.Count < 2)
+        {
+            EquationPlaybackSeries = Array.Empty<PolylineSeries>();
+        }
+        else
+        {
+            var playbackSeries = new List<PolylineSeries>();
+            if (envelopeCurve is not null && envelopeCurve.Points.Count > 1)
+            {
+                playbackSeries.Add(new PolylineSeries(
+                    envelopeCurve.Points.Select(point => point.ToPlotPoint()).ToArray(),
+                    "#8f6a3d",
+                    2.0,
+                    0.72,
+                    Dashed: true));
+            }
+
+            playbackSeries.Add(new PolylineSeries(
+                curve.Points.Select(point => point.ToPlotPoint()).ToArray(),
+                GetPseudoTimeColor(curve.Tau),
+                2.9,
+                1.0));
+            EquationPlaybackSeries = playbackSeries;
+        }
+
+        var tau = index < EquationSimulationPlayback.TauValues.Count ? EquationSimulationPlayback.TauValues[index] : curve.Tau;
+        var height = index < EquationSimulationPlayback.SimulatedHeight.Count ? EquationSimulationPlayback.SimulatedHeight[index] : 0;
+        var width = index < EquationSimulationPlayback.SimulatedWidth.Count ? EquationSimulationPlayback.SimulatedWidth[index] : 0;
+        var unit = SelectedFile?.Unit ?? "nm";
+        EquationPlaybackTauText = $"Tau: {tau:F2}";
+        EquationPlaybackHeightText = $"Height: {height:F2} {unit}";
+        EquationPlaybackWidthText = $"Width: {width:F2} {unit}";
     }
 
     private static IReadOnlyList<PolylineSeries> BuildEquationOverlaySeries(EquationDiscoveryResult result)
     {
-        var stageColors = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-        {
-            ["early"] = "#68a65b",
-            ["middle"] = "#d0a74d",
-            ["late"] = "#cf6a4d"
-        };
-
         var series = new List<PolylineSeries>();
         foreach (var curve in result.ObservedProfiles.OrderBy(curve => curve.Tau))
         {
             if (curve.Points.Count < 2) continue;
-            var color = stageColors.TryGetValue(curve.Stage, out var stageColor) ? stageColor : "#ead9bf";
+            var color = GetPseudoTimeColor(curve.Tau);
             series.Add(new PolylineSeries(curve.Points.Select(point => point.ToPlotPoint()).ToArray(), color, 2.6, 0.98));
         }
 
         foreach (var curve in result.ReconstructedProfiles.OrderBy(curve => curve.Tau))
         {
             if (curve.Points.Count < 2) continue;
-            var color = stageColors.TryGetValue(curve.Stage, out var stageColor) ? stageColor : "#fff4d8";
+            var color = GetPseudoTimeColor(curve.Tau);
             series.Add(new PolylineSeries(curve.Points.Select(point => point.ToPlotPoint()).ToArray(), color, 2.0, 0.72, Dashed: true));
         }
 
@@ -842,51 +1372,168 @@ public sealed partial class MainWindowViewModel : ViewModelBase
 
     private static IReadOnlyList<PolylineSeries> BuildEquationProgressionSeries(EquationDiscoveryResult result)
     {
-        var palette = new[]
-        {
-            "#6da65f",
-            "#92b76d",
-            "#c2b16a",
-            "#d5a55f",
-            "#cf8658",
-            "#c86f50",
-            "#bf5d49"
-        };
-
         return result.ProgressionProfiles
             .OrderBy(curve => curve.Tau)
-            .Select((curve, index) => new PolylineSeries(
+            .Select(curve => new PolylineSeries(
                 curve.Points.Select(point => point.ToPlotPoint()).ToArray(),
-                palette[Math.Min(index, palette.Length - 1)],
+                GetPseudoTimeColor(curve.Tau),
                 1.9,
                 0.98))
             .ToArray();
     }
 
-    private void ApplySimulationAlignedEquationFamilyIfAvailable()
+    private static Dictionary<string, double> BuildSequencePseudoTimeMapping(IReadOnlyList<int> sequenceOrders)
+    {
+        var mapping = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+        if (sequenceOrders.Count == 0) return mapping;
+
+        var minSequence = sequenceOrders.Min();
+        var maxSequence = sequenceOrders.Max();
+        foreach (var sequence in sequenceOrders)
+        {
+            var tau = maxSequence == minSequence
+                ? 0.5
+                : (sequence - minSequence) / (double)Math.Max(1, maxSequence - minSequence);
+            mapping[BuildSequenceAnchorLabel(sequence)] = tau;
+        }
+
+        return mapping;
+    }
+
+    private static EquationDiscoveryProfileInput BuildSequenceOrderedEquationDiscoveryInput(EquationDiscoveryProfileInput input)
+    {
+        return new EquationDiscoveryProfileInput
+        {
+            FileName = input.FileName,
+            FilePath = input.FilePath,
+            SequenceOrder = input.SequenceOrder,
+            Stage = BuildSequenceAnchorLabel(input.SequenceOrder),
+            ConditionType = input.ConditionType,
+            Unit = input.Unit,
+            DoseUgPerMl = input.DoseUgPerMl,
+            ScanSizeNm = input.ScanSizeNm,
+            NmPerPixel = input.NmPerPixel,
+            MeanHeightNm = input.MeanHeightNm,
+            MeanWidthNm = input.MeanWidthNm,
+            HeightToWidthRatio = input.HeightToWidthRatio,
+            RoughnessNm = input.RoughnessNm,
+            PeakSeparationNm = input.PeakSeparationNm,
+            DipDepthNm = input.DipDepthNm,
+            CompromiseRatio = input.CompromiseRatio,
+            XNm = input.XNm,
+            YNm = input.YNm,
+            SNm = input.SNm,
+            ZNm = input.ZNm,
+            GuidedPerpendicularProfiles = input.GuidedPerpendicularProfiles
+        };
+    }
+
+    private static string BuildSequenceAnchorLabel(int sequenceOrder) => $"Sequence {sequenceOrder}";
+
+    private static string FormatPseudoTimeAnchorLabel(string label)
+    {
+        if (string.IsNullOrWhiteSpace(label)) return "Sequence";
+        return string.Join(" ",
+            label
+                .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(token => token.Length == 0 ? token : char.ToUpperInvariant(token[0]) + token[1..]));
+    }
+
+    private static string GetPseudoTimeColor(double tau)
+    {
+        var clamped = Math.Clamp(tau, 0.0, 1.0);
+        var stops = new[]
+        {
+            (Tau: 0.0, Color: (R: 0x68, G: 0xa6, B: 0x5b)),
+            (Tau: 0.5, Color: (R: 0xd0, G: 0xa7, B: 0x4d)),
+            (Tau: 1.0, Color: (R: 0xcf, G: 0x6a, B: 0x4d))
+        };
+
+        for (var i = 1; i < stops.Length; i++)
+        {
+            var a = stops[i - 1];
+            var b = stops[i];
+            if (clamped > b.Tau) continue;
+            var mix = (clamped - a.Tau) / Math.Max(1e-9, b.Tau - a.Tau);
+            var r = (int)Math.Round(a.Color.R + (b.Color.R - a.Color.R) * mix);
+            var g = (int)Math.Round(a.Color.G + (b.Color.G - a.Color.G) * mix);
+            var bl = (int)Math.Round(a.Color.B + (b.Color.B - a.Color.B) * mix);
+            return $"#{r:X2}{g:X2}{bl:X2}";
+        }
+
+        return "#cf6a4d";
+    }
+
+    private bool ApplySimulationAlignedEquationFamilyIfAvailable()
     {
         var simulation = GetOrBuildSimulationCache();
-        if (simulation is null || simulation.Frames.Count < 3) return;
+        if (simulation is null || simulation.Frames.Count < 3) return false;
 
         var candidates = BuildSimulationEquationCandidates(simulation);
-        if (candidates.Count == 0) return;
+        if (candidates.Count == 0) return false;
 
         _simulationEquationCandidates = candidates;
+        EquationDiscoveryStageProfiles = BuildSimulationEquationStageProfiles(simulation);
         EquationFamily = candidates.Select(candidate => candidate.Display).ToArray();
         EquationOverlaySeries = BuildSimulationEquationOverlaySeries(simulation, candidates[0]);
         EquationProgressionSeries = BuildSimulationEquationProgressionSeries(simulation, candidates[0]);
-        EquationDiscoveryStatusText = "Showing the simulation-aligned bimodal evolution equations derived from the same centered Gaussian trajectory used by the Growth Model tab.";
+        EquationDiscoveryStageMappingText = "Sequence anchors: " + string.Join("  |  ",
+            simulation.References
+                .OrderBy(reference => reference.Position01)
+                .Select(reference => $"{BuildSequenceAnchorLabel(reference.SequenceOrder)} = {reference.Position01:F2}"));
+        EquationDiscoveryStatusText = $"Showing {candidates.Count} strict bimodal polynomial candidate(s) aligned to the current growth-model trajectory.";
         EquationDiscoveryProfileModeText =
-            "Current reduced model: z(s, tau) is represented as a centered bimodal Gaussian whose amplitudes, widths, and peak separation evolve over pseudo-time tau.";
+            "Current reduced model: z(s, tau) = z_L(s, tau) + z_R(s, tau), with A_L, sigma_L, A_R, sigma_R, and Delta each evolving as low-order polynomials over sequence-derived tau.";
         EquationDiscoveryMetaText =
-            "The equations listed below are now fit directly to the same bimodal evolution shown in the simulation, so the displayed law matches the solid fitted curve in the Growth Model tab.";
+            $"Sequence order sets the pseudo-time anchors. The displayed family is constrained to two persistent rim peaks, while polynomial coefficients control left/right height, left/right width, and tramline separation up to degree {simulation.PolynomialDegree}.";
         EquationDiscoveryOverlayLegendText =
-            "Stage colours: Early = green, Middle = amber, Late = red. Solid lines = centered bimodal profiles extracted from the simulation references. Dashed lines = profiles reconstructed from the parameter-evolution equations at those same pseudo-time anchors.";
+            "Colours follow sequence-derived pseudo-time from green to red. Solid lines = baseline-corrected reference profiles extracted from the current simulation references. Dashed lines = strict bimodal reconstructions from the parameter-evolution equations at those same ordered anchors.";
         EquationDiscoveryProgressionLegendText =
-            "Coloured curves show the same centered bimodal Gaussian evolution law used by the Growth Model simulation, expressed here as parameter equations over pseudo-time tau.";
+            "Coloured curves show the same strict bimodal evolution law used by the Growth Model simulation, expressed as polynomial parameter equations over sequence-derived pseudo-time.";
         EquationDiscoveryTermGuideText =
-            "Bimodal model guide: z(s, tau) is explicitly written as z_L(s, tau) + z_R(s, tau), so the discovered family remains two-peaked across pseudo-time rather than collapsing to a single Gaussian. A_L and A_R are the left and right peak heights, sigma_L and sigma_R are the corresponding Gaussian widths, Delta is the peak-to-peak spacing, s_c is the fixed centred reference position, and tau is latent stage progression rather than real time.";
-        EquationTermExplanations = BuildBimodalEquationTermExplanations();
+            "Bimodal model guide: z(s, tau) is explicitly written as z_L(s, tau) + z_R(s, tau), so the discovered family remains two-peaked across pseudo-time rather than collapsing to a single Gaussian. A_L and A_R are the left and right peak heights, sigma_L and sigma_R are the corresponding Gaussian widths, Delta is the peak-to-peak spacing, s_c is the fixed centred reference position, and tau is sequence-derived progression rather than real time.";
+        EquationDiscoveryXAxisLabel = simulation.UsesGuidedAlignment ? $"Centered corridor offset [{simulation.Unit}]" : $"Centered x [{simulation.Unit}]";
+        EquationDiscoveryYAxisLabel = $"Height above local baseline [{simulation.Unit}]";
+        EquationTermExplanations = BuildEquationTermExplanations(candidates.Select(candidate => candidate.Display));
+        StopEquationPlayback();
+        SubscribeEquationPlaybackModel(null);
+        EquationPlaybackSeries = Array.Empty<PolylineSeries>();
+        EquationPlaybackFrameMaximum = 1;
+        EquationPlaybackFramePosition = 0;
+        EquationPlaybackTauText = "Tau: -";
+        EquationPlaybackHeightText = "Height: -";
+        EquationPlaybackWidthText = "Width: -";
+        EquationPlaybackFixedXMin = double.NaN;
+        EquationPlaybackFixedXMax = double.NaN;
+        EquationPlaybackFixedYMin = double.NaN;
+        EquationPlaybackFixedYMax = double.NaN;
+        EquationPlaybackStatusText = "Playback is only available for the Python-discovered equation family, not the simulation-aligned fallback.";
+        return true;
+    }
+
+    private IReadOnlyList<EquationDiscoveryStageProfile> BuildSimulationEquationStageProfiles(SurfaceSimulationResult simulation)
+    {
+        return simulation.References
+            .OrderBy(reference => reference.Position01)
+            .Select(reference =>
+            {
+                var file = Files.FirstOrDefault(candidate => string.Equals(candidate.Name, reference.FileName, StringComparison.OrdinalIgnoreCase))
+                    ?? Files.FirstOrDefault(candidate => candidate.SequenceOrder == reference.SequenceOrder);
+                var summary = file?.GuidedSummary;
+                return new EquationDiscoveryStageProfile
+                {
+                    Stage = BuildSequenceAnchorLabel(reference.SequenceOrder),
+                    Tau = reference.Position01,
+                    SampleCount = summary?.ValidProfileCount ?? 0,
+                    MeanHeightNm = summary?.MeanHeightNm ?? 0,
+                    HeightStdNm = summary?.HeightStdNm ?? 0,
+                    MeanWidthNm = summary?.MeanWidthNm ?? 0,
+                    WidthStdNm = summary?.WidthStdNm ?? 0,
+                    MeanArea = summary is null ? 0 : Math.Max(0, summary.MeanHeightNm) * Math.Max(0, summary.MeanWidthNm),
+                    MeanRoughnessNm = summary?.RoughnessNm ?? 0
+                };
+            })
+            .ToArray();
     }
 
     private IReadOnlyList<SimulationEquationCandidate> BuildSimulationEquationCandidates(SurfaceSimulationResult simulation)
@@ -970,9 +1617,10 @@ public sealed partial class MainWindowViewModel : ViewModelBase
             var complexity = degree / 3.0;
             var metaPrior = degree == simulation.PolynomialDegree ? 1.0 : 0.78;
             var sensitivity = Math.Abs(widthError) / Math.Max(1.0, simulation.ScanSizeNmX);
+            var rmseQuality = ComputeEquationRmseQualityFactor(rmse);
             var confidence = Math.Clamp(
                 0.35 * stability +
-                0.22 * (1.0 / (1.0 + rmse)) +
+                0.22 * rmseQuality +
                 0.14 * (1.0 / (1.0 + peakError)) +
                 0.12 * (1.0 / (1.0 + widthError)) +
                 0.07 * (1.0 / (1.0 + areaError / Math.Max(1.0, simulation.ScanSizeNmX))) +
@@ -1007,7 +1655,8 @@ public sealed partial class MainWindowViewModel : ViewModelBase
                 MetaPriorScore = metaPrior,
                 Notes =
                     $"Derived from the same centered bimodal Gaussian trajectory used in Growth Model. " +
-                    $"At every pseudo-time τ the profile is reconstructed as the sum of two Gaussian peaks, while polynomial degree {degree} controls how A_L, σ_L, A_R, σ_R, and Δ evolve."
+                    $"At every pseudo-time τ the profile is reconstructed as the sum of two Gaussian peaks, while polynomial degree {degree} controls how A_L, σ_L, A_R, σ_R, and Δ evolve. " +
+                    $"RMSE quality: {DescribeEquationRmseQuality(rmse)} (target <= {GoodEquationRmseThresholdNm:F0} nm, fail > {FailEquationRmseThresholdNm:F0} nm)."
             };
 
             provisional.Add((new SimulationEquationCandidate
@@ -1023,8 +1672,11 @@ public sealed partial class MainWindowViewModel : ViewModelBase
         }
 
         return provisional
+            .Where(entry => IsStatisticallyInterpretableEquation(entry.Candidate.Display))
             .OrderBy(entry => entry.Score)
             .ThenByDescending(entry => entry.Candidate.Display.Confidence)
+            .GroupBy(entry => BuildEquationCandidateSignature(entry.Candidate.Display), StringComparer.Ordinal)
+            .Select(group => group.First())
             .Select((entry, index) => new SimulationEquationCandidate
             {
                 Display = new EquationCandidateResult
@@ -1057,15 +1709,38 @@ public sealed partial class MainWindowViewModel : ViewModelBase
             .ToArray();
     }
 
+    private static double ComputeEquationRmseQualityFactor(double rmse)
+    {
+        if (rmse <= GoodEquationRmseThresholdNm) return 1.0;
+        if (rmse >= FailEquationRmseThresholdNm) return 0.0;
+        return Math.Clamp((FailEquationRmseThresholdNm - rmse) / (FailEquationRmseThresholdNm - GoodEquationRmseThresholdNm), 0.0, 1.0);
+    }
+
+    private static string DescribeEquationRmseQuality(double rmse)
+    {
+        if (rmse <= GoodEquationRmseThresholdNm) return "good";
+        if (rmse <= FailEquationRmseThresholdNm) return "caution";
+        return "fail";
+    }
+
+    private static bool IsStatisticallyInterpretableEquation(EquationCandidateResult candidate)
+    {
+        if (!double.IsFinite(candidate.Rmse) || !double.IsFinite(candidate.Confidence)) return false;
+        if (candidate.Rmse > FailEquationRmseThresholdNm) return false;
+        if (candidate.Confidence < 0.35) return false;
+        return true;
+    }
+
+    private static string BuildEquationCandidateSignature(EquationCandidateResult candidate)
+    {
+        var coefficients = candidate.Coefficients
+            .OrderBy(entry => entry.Key, StringComparer.OrdinalIgnoreCase)
+            .Select(entry => $"{entry.Key}:{Math.Round(entry.Value, 8):G17}");
+        return string.Join("|", coefficients);
+    }
+
     private IReadOnlyList<PolylineSeries> BuildSimulationEquationOverlaySeries(SurfaceSimulationResult simulation, SimulationEquationCandidate candidate)
     {
-        var stageColors = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-        {
-            ["early"] = "#68a65b",
-            ["middle"] = "#d0a74d",
-            ["late"] = "#cf6a4d"
-        };
-
         var series = new List<PolylineSeries>();
         for (var i = 0; i < simulation.References.Count && i < simulation.ReferenceSurfaces.Count; i++)
         {
@@ -1079,7 +1754,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase
 
             var predictedParameters = EvaluateSimulationEquationCandidate(candidate, reference.Position01);
             var predicted = _analysis.BuildCenteredBimodalProfileFromParameters(predictedParameters, simulation.Width, simulation.ScanSizeNmX);
-            var color = stageColors.TryGetValue(reference.Stage, out var stageColor) ? stageColor : "#ead9bf";
+            var color = GetPseudoTimeColor(reference.Position01);
             series.Add(new PolylineSeries(actual.ToArray(), color, 2.6, 0.98));
             if (predicted.Count > 1)
             {
@@ -1092,24 +1767,13 @@ public sealed partial class MainWindowViewModel : ViewModelBase
 
     private IReadOnlyList<PolylineSeries> BuildSimulationEquationProgressionSeries(SurfaceSimulationResult simulation, SimulationEquationCandidate candidate)
     {
-        var palette = new[]
-        {
-            "#6da65f",
-            "#92b76d",
-            "#c2b16a",
-            "#d5a55f",
-            "#cf8658",
-            "#c86f50",
-            "#bf5d49"
-        };
-
         return Enumerable.Range(0, 7)
             .Select(index => index / 6.0)
-            .Select((tau, index) =>
+            .Select(tau =>
             {
                 var parameters = EvaluateSimulationEquationCandidate(candidate, tau);
                 var profile = _analysis.BuildCenteredBimodalProfileFromParameters(parameters, simulation.Width, simulation.ScanSizeNmX);
-                return new PolylineSeries(profile.ToArray(), palette[Math.Min(index, palette.Length - 1)], 1.9, 0.98);
+                return new PolylineSeries(profile.ToArray(), GetPseudoTimeColor(tau), 1.9, 0.98);
             })
             .Where(series => series.Points.Count > 1)
             .ToArray();
@@ -1226,7 +1890,91 @@ public sealed partial class MainWindowViewModel : ViewModelBase
         return output.ToString();
     }
 
-    private static IReadOnlyList<EquationTermExplanation> BuildGenericEquationTermExplanations() =>
+    private static IReadOnlyList<EquationTermExplanation> BuildEquationTermExplanations(IEnumerable<EquationCandidateResult> candidates)
+    {
+        var discoveredSymbols = ExtractDiscoveredEquationSymbols(candidates);
+        if (discoveredSymbols.Count == 0) return Array.Empty<EquationTermExplanation>();
+
+        var knownExplanations = BuildKnownEquationTermExplanations()
+            .GroupBy(explanation => explanation.Symbol, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
+
+        return discoveredSymbols
+            .Select(symbol => knownExplanations.TryGetValue(symbol, out var explanation)
+                ? explanation
+                : new EquationTermExplanation
+                {
+                    Symbol = symbol,
+                    Meaning = "Discovered model term",
+                    Detail = "This symbol appears in the current discovered equation family for the guided profile stack."
+                })
+            .OrderBy(explanation => GetEquationTermPriority(explanation.Symbol))
+            .ThenBy(explanation => explanation.Symbol, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
+    private static IReadOnlyCollection<string> ExtractDiscoveredEquationSymbols(IEnumerable<EquationCandidateResult> candidates)
+    {
+        var symbols = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var candidate in candidates)
+        {
+            foreach (var activeTerm in candidate.ActiveTerms)
+            {
+                var symbol = NormalizeDiscoveredEquationTerm(activeTerm);
+                if (!string.IsNullOrWhiteSpace(symbol)) symbols.Add(symbol);
+            }
+
+            foreach (var coefficientKey in candidate.Coefficients.Keys)
+            {
+                foreach (var token in coefficientKey.Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                {
+                    var symbol = NormalizeDiscoveredEquationTerm(token);
+                    if (!string.IsNullOrWhiteSpace(symbol)) symbols.Add(symbol);
+                }
+            }
+        }
+
+        return symbols;
+    }
+
+    private static string NormalizeDiscoveredEquationTerm(string term)
+    {
+        var trimmed = (term ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(trimmed)) return string.Empty;
+
+        return trimmed switch
+        {
+            "tau" => "τ",
+            "A1" => "A_L(τ), A_R(τ)",
+            "A2" => "A_L(τ), A_R(τ)",
+            "sigma1" => "σ_L(τ), σ_R(τ)",
+            "sigma2" => "σ_L(τ), σ_R(τ)",
+            "D" => "Δ(τ)",
+            "mu1" => "s_L(τ), s_R(τ)",
+            "mu2" => "s_L(τ), s_R(τ)",
+            "z" => "z(s, τ)",
+            _ => trimmed
+        };
+    }
+
+    private static int GetEquationTermPriority(string symbol)
+    {
+        return symbol switch
+        {
+            "z(s, τ)" => 0,
+            "τ" => 1,
+            "A_L(τ), A_R(τ)" => 2,
+            "σ_L(τ), σ_R(τ)" => 3,
+            "s_L(τ), s_R(τ)" => 4,
+            "Δ(τ)" => 5,
+            "z_L(s, τ), z_R(s, τ)" => 6,
+            "s_c" => 7,
+            "s" => 8,
+            _ => 99
+        };
+    }
+
+    private static IReadOnlyList<EquationTermExplanation> BuildKnownEquationTermExplanations() =>
     [
         new EquationTermExplanation
         {
@@ -1236,15 +1984,33 @@ public sealed partial class MainWindowViewModel : ViewModelBase
         },
         new EquationTermExplanation
         {
-            Symbol = "s",
-            Meaning = "Aligned centreline position",
-            Detail = "Distance along the guided piecrust centreline extracted from the original x-y-z AFM surface."
-        },
-        new EquationTermExplanation
-        {
             Symbol = "τ",
             Meaning = "Pseudo-time / progression variable",
             Detail = "Ordered stage progression anchor, not real clock time."
+        },
+        new EquationTermExplanation
+        {
+            Symbol = "1",
+            Meaning = "Constant term",
+            Detail = "A baseline offset term in the discovered equation."
+        },
+        new EquationTermExplanation
+        {
+            Symbol = "z",
+            Meaning = "Profile height state",
+            Detail = "The current local height value used directly in the discovered field equation."
+        },
+        new EquationTermExplanation
+        {
+            Symbol = "z^2",
+            Meaning = "Quadratic height term",
+            Detail = "Captures nonlinear self-interaction of the local height field."
+        },
+        new EquationTermExplanation
+        {
+            Symbol = "z^3",
+            Meaning = "Cubic height term",
+            Detail = "A higher-order nonlinear height contribution used only when the discovered family needs extra shape flexibility."
         },
         new EquationTermExplanation
         {
@@ -1254,43 +2020,27 @@ public sealed partial class MainWindowViewModel : ViewModelBase
         },
         new EquationTermExplanation
         {
-            Symbol = "d²z/ds²",
+            Symbol = "d2z/ds2",
             Meaning = "Curvature",
             Detail = "How sharply the profile bends; positive and negative values indicate different local shape changes."
         },
         new EquationTermExplanation
         {
-            Symbol = "d³z/ds³, d⁴z/ds⁴",
-            Meaning = "Higher-order shape terms",
-            Detail = "Used only in the reduced discovery mode to capture sharper rim formation and smoothing behaviour."
-        }
-    ];
-
-    private static IReadOnlyList<EquationTermExplanation> BuildBimodalEquationTermExplanations() =>
-    [
-        new EquationTermExplanation
-        {
-            Symbol = "z(s, τ)",
-            Meaning = "Total reconstructed piecrust profile",
-            Detail = "This is explicitly the sum of two peaks, z_L + z_R, so the discovered evolution remains bimodal."
-        },
-        new EquationTermExplanation
-        {
             Symbol = "z_L(s, τ), z_R(s, τ)",
-            Meaning = "Left and right Gaussian rim profiles",
-            Detail = "Each side of the piecrust is modelled as its own Gaussian contribution before the two are added together."
+            Meaning = "Left and right Gaussian ridge profiles",
+            Detail = "The reconstructed profile is written as a sum of two Gaussian contributions so the tramline shape stays explicitly bimodal."
         },
         new EquationTermExplanation
         {
             Symbol = "A_L(τ), A_R(τ)",
             Meaning = "Left and right peak heights",
-            Detail = "These polynomial laws control how tall each piecrust rim becomes as progression increases."
+            Detail = "These are the state variables for left and right tramline amplitude, and the discovered ODE system governs how they change with pseudo-time."
         },
         new EquationTermExplanation
         {
             Symbol = "σ_L(τ), σ_R(τ)",
             Meaning = "Left and right peak widths",
-            Detail = "These determine how broad or narrow each Gaussian rim is at a given pseudo-time."
+            Detail = "These determine how broad or narrow each Gaussian rim is at a given pseudo-time and are evolved directly by the fitted feature dynamics."
         },
         new EquationTermExplanation
         {
@@ -1302,19 +2052,109 @@ public sealed partial class MainWindowViewModel : ViewModelBase
         {
             Symbol = "Δ(τ)",
             Meaning = "Peak-to-peak separation",
-            Detail = "Controls how far apart the two bimodal rims are at each pseudo-time."
+            Detail = "Controls how far apart the two bimodal rims are at each pseudo-time, so tramline splitting is visible as Delta grows."
+        },
+        new EquationTermExplanation
+        {
+            Symbol = "A_mean",
+            Meaning = "Mean peak amplitude",
+            Detail = "The average of the left and right peak heights used as a reduced feature in the feature-evolution ODE."
+        },
+        new EquationTermExplanation
+        {
+            Symbol = "sigma_mean",
+            Meaning = "Mean peak width",
+            Detail = "The average of the left and right Gaussian widths used as a compact feature in the discovered dynamics."
+        },
+        new EquationTermExplanation
+        {
+            Symbol = "ratio_minus_1",
+            Meaning = "Amplitude asymmetry",
+            Detail = "Measures how different the left and right peak heights are relative to each other."
+        },
+        new EquationTermExplanation
+        {
+            Symbol = "D_over_sigma",
+            Meaning = "Separation-to-width ratio",
+            Detail = "A compact bimodality measure comparing tramline separation with the average peak width."
+        },
+        new EquationTermExplanation
+        {
+            Symbol = "tau^2",
+            Meaning = "Quadratic pseudo-time term",
+            Detail = "Lets the discovered dynamics curve over progression rather than changing only linearly with pseudo-time."
+        },
+        new EquationTermExplanation
+        {
+            Symbol = "z*tau",
+            Meaning = "Height-time interaction",
+            Detail = "Captures how the effect of the local height changes across pseudo-time."
+        },
+        new EquationTermExplanation
+        {
+            Symbol = "A_mean*tau",
+            Meaning = "Amplitude-time interaction",
+            Detail = "Lets the average rim amplitude influence the discovered dynamics differently at different stages of progression."
+        },
+        new EquationTermExplanation
+        {
+            Symbol = "D*tau",
+            Meaning = "Separation-time interaction",
+            Detail = "Lets the effect of tramline separation vary across pseudo-time."
+        },
+        new EquationTermExplanation
+        {
+            Symbol = "z*(dz/ds)",
+            Meaning = "Height-slope interaction",
+            Detail = "A nonlinear coupling between local height and local slope."
+        },
+        new EquationTermExplanation
+        {
+            Symbol = "z*(d2z/ds2)",
+            Meaning = "Height-curvature interaction",
+            Detail = "A nonlinear term coupling height to local curvature."
+        },
+        new EquationTermExplanation
+        {
+            Symbol = "(dz/ds)^2",
+            Meaning = "Squared slope term",
+            Detail = "Captures symmetric steepness effects regardless of slope sign."
+        },
+        new EquationTermExplanation
+        {
+            Symbol = "z^2*(dz/ds)",
+            Meaning = "Quadratic height-slope interaction",
+            Detail = "A higher-order nonlinear interaction between height and slope."
+        },
+        new EquationTermExplanation
+        {
+            Symbol = "z^2*(d2z/ds2)",
+            Meaning = "Quadratic height-curvature interaction",
+            Detail = "A higher-order nonlinear interaction between height and curvature."
+        },
+        new EquationTermExplanation
+        {
+            Symbol = "(d2z/ds2)*tau",
+            Meaning = "Curvature-time interaction",
+            Detail = "Lets curvature contribute differently across pseudo-time."
+        },
+        new EquationTermExplanation
+        {
+            Symbol = "d3z/ds3",
+            Meaning = "Third spatial derivative",
+            Detail = "Captures asymmetric shape changes and sharper transitions in the guided profile."
+        },
+        new EquationTermExplanation
+        {
+            Symbol = "d4z/ds4",
+            Meaning = "Fourth spatial derivative",
+            Detail = "Captures higher-order smoothing or sharpening behaviour in the discovered field equation."
         },
         new EquationTermExplanation
         {
             Symbol = "s_c",
             Meaning = "Centred reference position",
             Detail = "The fixed aligned centre of the guided profile. The left and right peaks move around this anchor."
-        },
-        new EquationTermExplanation
-        {
-            Symbol = "τ",
-            Meaning = "Pseudo-time / stage progression",
-            Detail = "A latent progression coordinate inferred from early, middle, and late ordering rather than true time-lapse kinetics."
         }
     ];
 
@@ -1439,17 +2279,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase
 
     public void ToggleSimulationPlayback()
     {
-        if (SimulationStartFile is null || SimulationEndFile is null)
-        {
-            StatusText = "Choose start and end reference files before running the simulation.";
-            return;
-        }
-
-        if (ReferenceEquals(SimulationStartFile, SimulationEndFile))
-        {
-            StatusText = "Choose two different reference files for the simulation.";
-            return;
-        }
+        if (!EnsureDistinctSimulationReferences("Simulation playback")) return;
 
         if (IsSimulationPlaying)
         {
@@ -1465,24 +2295,16 @@ public sealed partial class MainWindowViewModel : ViewModelBase
     public void RunPolynomialEvolution()
     {
         StopSimulationPlayback();
-        if (SimulationStartFile is null || SimulationEndFile is null)
-        {
-            StatusText = "Choose start and end reference files before running the polynomial evolution.";
-            return;
-        }
-
-        if (ReferenceEquals(SimulationStartFile, SimulationEndFile))
-        {
-            StatusText = "Choose two different reference files for the polynomial evolution.";
-            return;
-        }
+        if (!EnsureDistinctSimulationReferences("Polynomial evolution")) return;
 
         InvalidateSimulationCache();
         SimulationProgress = 0;
         RefreshSimulationSeries();
         if (_surfaceSimulationCache is null)
         {
-            StatusText = "The selected references did not generate a usable polynomial evolution.";
+            RaiseUserAlert(
+                "Polynomial Evolution Unavailable",
+                "The selected references did not generate a usable polynomial evolution. Confirm that both files have guided extractions and distinct ordered sequence anchors.");
             return;
         }
 
@@ -1644,14 +2466,14 @@ public sealed partial class MainWindowViewModel : ViewModelBase
             CurrentRemovalRateText = "Removal Rate: -";
             CurrentCompromiseText = "Compromise: -";
             CurrentProfileXAxisLabel = "x [nm]";
-            CurrentProfileYAxisLabel = "y [nm]";
+            CurrentProfileYAxisLabel = "Height above local baseline [nm]";
             EvolutionXAxisLabel = "Relative lateral position [% of extracted profile]";
-            EvolutionYAxisLabel = "Baseline-shifted height [nm]";
-            SimulationXAxisLabel = "Aligned x [nm]";
-            SimulationYAxisLabel = "Simulated height [nm]";
+            EvolutionYAxisLabel = "Height above local baseline [nm]";
+            SimulationXAxisLabel = "Centered x [nm]";
+            SimulationYAxisLabel = "Height above local baseline [nm]";
             SimulationReferenceSummaryText = "Ordered references: -";
             SimulationSurfaceMetaText = "Surface frame: -";
-            SimulationSurfaceXAxisLabel = "Aligned x [nm]";
+            SimulationSurfaceXAxisLabel = "Centered x [nm]";
             SimulationSurfaceYAxisLabel = "Aligned y [nm]";
             SelectedStageHintText = "Stage is auto-classified on load, but you can change it manually.";
             return;
@@ -1664,12 +2486,12 @@ public sealed partial class MainWindowViewModel : ViewModelBase
         SelectedDisplayReferenceText = $"Display Reference: {SelectedFile.DisplayReferenceNm:F2} {SelectedFile.Unit}";
         SelectedEstimatedNoiseText = $"Estimated Noise Sigma: {SelectedFile.EstimatedNoiseSigma:F3} {SelectedFile.Unit}";
         CurrentProfileXAxisLabel = $"x [{SelectedFile.Unit}]";
-        CurrentProfileYAxisLabel = $"y [{SelectedFile.Unit}]";
+        CurrentProfileYAxisLabel = $"Height above local baseline [{SelectedFile.Unit}]";
         EvolutionXAxisLabel = "Relative lateral position [% of extracted profile]";
-        EvolutionYAxisLabel = $"Baseline-shifted height [{SelectedFile.Unit}]";
-        SimulationXAxisLabel = $"Corridor offset [{SelectedFile.Unit}]";
-        SimulationYAxisLabel = $"Simulated height [{SelectedFile.Unit}]";
-        SimulationSurfaceXAxisLabel = $"Corridor offset [{SelectedFile.Unit}]";
+        EvolutionYAxisLabel = $"Height above local baseline [{SelectedFile.Unit}]";
+        SimulationXAxisLabel = $"Centered corridor offset [{SelectedFile.Unit}]";
+        SimulationYAxisLabel = $"Height above local baseline [{SelectedFile.Unit}]";
+        SimulationSurfaceXAxisLabel = $"Centered corridor offset [{SelectedFile.Unit}]";
         SimulationSurfaceYAxisLabel = $"Guide distance [{SelectedFile.Unit}]";
         SelectedStageHintText = $"Stage is currently '{SelectedFile.Stage}'. You can override the auto-assigned stage if this file belongs in a different phase.";
 
@@ -1803,6 +2625,8 @@ public sealed partial class MainWindowViewModel : ViewModelBase
         {
             SimulationSurfaceBitmap = null;
             SimulationSeries = Array.Empty<PolylineSeries>();
+            SimulationPlotFixedXMin = double.NaN;
+            SimulationPlotFixedXMax = double.NaN;
             SimulationPlotFixedYMin = double.NaN;
             SimulationPlotFixedYMax = double.NaN;
             SimulationStatusText = "Select start and end reference files to run the full 2D growth simulation.";
@@ -1817,6 +2641,8 @@ public sealed partial class MainWindowViewModel : ViewModelBase
         {
             SimulationSurfaceBitmap = null;
             SimulationSeries = Array.Empty<PolylineSeries>();
+            SimulationPlotFixedXMin = double.NaN;
+            SimulationPlotFixedXMax = double.NaN;
             SimulationPlotFixedYMin = double.NaN;
             SimulationPlotFixedYMax = double.NaN;
             SimulationStatusText = "The selected references do not currently yield a usable 2D simulation.";
@@ -1828,20 +2654,23 @@ public sealed partial class MainWindowViewModel : ViewModelBase
 
         var currentFrame = _analysis.BuildInterpolatedSimulationFrame(simulation, SimulationProgress);
         SimulationSurfaceBitmap = null;
-        SimulationXAxisLabel = simulation.UsesGuidedAlignment ? $"Corridor offset [{simulation.Unit}]" : $"Aligned x [{simulation.Unit}]";
-        SimulationSurfaceXAxisLabel = simulation.UsesGuidedAlignment ? $"Corridor offset [{simulation.Unit}]" : $"Aligned x [{simulation.Unit}]";
+        SimulationXAxisLabel = simulation.UsesGuidedAlignment ? $"Centered corridor offset [{simulation.Unit}]" : $"Centered x [{simulation.Unit}]";
+        SimulationSurfaceXAxisLabel = simulation.UsesGuidedAlignment ? $"Centered corridor offset [{simulation.Unit}]" : $"Centered x [{simulation.Unit}]";
         SimulationSurfaceYAxisLabel = simulation.UsesGuidedAlignment ? $"Guide distance [{simulation.Unit}]" : $"Aligned y [{simulation.Unit}]";
-        SimulationSeries = BuildSimulationPlotSeries(simulation, currentFrame);
+        SimulationSeries = BuildSimulationPlotSeries(simulation, currentFrame, SimulationProgress);
+        SimulationPlotFixedXMin = -simulation.ScanSizeNmX / 2.0;
+        SimulationPlotFixedXMax = simulation.ScanSizeNmX / 2.0;
         SimulationPlotFixedYMin = 0;
         SimulationPlotFixedYMax = GetSimulationPlotYMax(simulation);
+        SimulationPlotLegendText = "Dotted = centered evolving cross-section | Solid = polynomial-in-time bimodal Gaussian fit";
         SimulationReferenceSummaryText = BuildSimulationReferenceSummary(simulation);
         var alignmentText = simulation.UsesGuidedAlignment
-            ? "The simulation now uses only the guided corridor region, widened to corridor + 20%, so the evolving profile keeps a little extra context around the extracted piecrust."
+            ? "The simulation uses the guided corridor region, widened to corridor + 20%, then keeps each cross-section centered so the morphology grows in place instead of drifting laterally."
             : "Guided alignment was unavailable for one or more references, so full-image surfaces were used.";
-        SimulationSurfaceMetaText = $"Simulation span {(int)Math.Round(SimulationProgress * (simulation.Frames.Count - 1)) + 1}/{simulation.Frames.Count}  |  cross-section width: 0-{simulation.ScanSizeNmX:F1} {simulation.Unit}  |  guide distance: 0-{simulation.ScanSizeNmY:F1} {simulation.Unit}  |  {alignmentText}";
+        SimulationSurfaceMetaText = $"Simulation span {(int)Math.Round(SimulationProgress * (simulation.Frames.Count - 1)) + 1}/{simulation.Frames.Count}  |  centered cross-section: {-simulation.ScanSizeNmX / 2.0:F1} to {simulation.ScanSizeNmX / 2.0:F1} {simulation.Unit}  |  guide distance: 0-{simulation.ScanSizeNmY:F1} {simulation.Unit}  |  {alignmentText}";
         SimulationStatusText = simulation.UsesSupervisedLearning
-            ? $"Polynomial gap-filling fit (degree {simulation.PolynomialDegree}) across {simulation.References.Count} ordered reference stage(s), guided by a supervised bimodal growth learner trained on {simulation.SupervisedExampleCount} stored example(s). The dotted curve is the evolving simulated cross-section, and the solid curve is the centered bimodal Gaussian fit where the valley between peaks is the removal signature."
-            : $"Polynomial gap-filling fit (degree {simulation.PolynomialDegree}) across {simulation.References.Count} ordered reference stage(s). The dotted curve is the evolving simulated cross-section, and the solid curve is the centered bimodal Gaussian fit where the valley between peaks is the removal signature.";
+            ? $"Polynomial surface evolution (degree {simulation.PolynomialDegree}) across {simulation.References.Count} ordered reference point(s), guided by a learned profile-growth model trained on {simulation.SupervisedExampleCount} stored example(s). The dotted curve is the centered evolving simulated cross-section, and the solid curve is the matched polynomial + bimodal Gaussian growth fit."
+            : $"Polynomial surface evolution (degree {simulation.PolynomialDegree}) across {simulation.References.Count} ordered reference point(s). The dotted curve is the centered evolving simulated cross-section, and the solid curve is the matched polynomial + bimodal Gaussian growth fit.";
         SupervisedModelStatusText = _supervisedGrowthLearning.DescribeModel(_supervisedGrowthModel);
     }
 
@@ -1859,10 +2688,14 @@ public sealed partial class MainWindowViewModel : ViewModelBase
         SimulationSurfaceBitmap = null;
     }
 
-    private IReadOnlyList<PolylineSeries> BuildSimulationPlotSeries(SurfaceSimulationResult simulation, double[] currentFrame)
+    private IReadOnlyList<PolylineSeries> BuildSimulationPlotSeries(SurfaceSimulationResult simulation, double[] currentFrame, double progress)
     {
         var rawProfile = _analysis.BuildSurfaceCrossSection(currentFrame, simulation.Width, simulation.Height, simulation.ScanSizeNmX);
-        var fittedProfile = _analysis.BuildCenteredBimodalSimulationProfile(currentFrame, simulation.Width, simulation.Height, simulation.ScanSizeNmX);
+        var fittedProfile = _analysis.BuildBimodalPolynomialSimulationProfile(simulation, progress);
+        if (fittedProfile.Count == 0)
+        {
+            fittedProfile = _analysis.BuildCenteredBimodalSimulationProfile(currentFrame, simulation.Width, simulation.Height, simulation.ScanSizeNmX);
+        }
         if (fittedProfile.Count == 0 && rawProfile.Count == 0) return Array.Empty<PolylineSeries>();
 
         var series = new List<PolylineSeries>(2);
@@ -1882,7 +2715,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase
     private double GetSimulationPlotYMax(SurfaceSimulationResult simulation)
     {
         var maxY = simulation.Frames
-            .SelectMany(frame => GetSimulationPlotProfiles(simulation, frame))
+            .SelectMany((frame, index) => GetSimulationPlotProfiles(simulation, frame, simulation.FrameProgresses[index]))
             .SelectMany(profile => profile)
             .Where(point => double.IsFinite(point.Y))
             .Select(point => point.Y)
@@ -1892,7 +2725,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase
         return Math.Max(1, maxY * 1.08);
     }
 
-    private IEnumerable<IReadOnlyList<PlotPoint>> GetSimulationPlotProfiles(SurfaceSimulationResult simulation, double[] frame)
+    private IEnumerable<IReadOnlyList<PlotPoint>> GetSimulationPlotProfiles(SurfaceSimulationResult simulation, double[] frame, double progress)
     {
         var rawProfile = _analysis.BuildSurfaceCrossSection(frame, simulation.Width, simulation.Height, simulation.ScanSizeNmX);
         if (rawProfile.Count > 0)
@@ -1900,7 +2733,11 @@ public sealed partial class MainWindowViewModel : ViewModelBase
             yield return rawProfile;
         }
 
-        var fittedProfile = _analysis.BuildCenteredBimodalSimulationProfile(frame, simulation.Width, simulation.Height, simulation.ScanSizeNmX);
+        var fittedProfile = _analysis.BuildBimodalPolynomialSimulationProfile(simulation, progress);
+        if (fittedProfile.Count == 0)
+        {
+            fittedProfile = _analysis.BuildCenteredBimodalSimulationProfile(frame, simulation.Width, simulation.Height, simulation.ScanSizeNmX);
+        }
         if (fittedProfile.Count > 0)
         {
             yield return fittedProfile;
