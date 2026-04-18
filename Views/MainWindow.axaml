@@ -372,6 +372,15 @@
                                                       LightTheme="True"/>
                         </Border>
                         <TextBlock Text="{Binding EquationDiscoveryProgressionLegendText}" Foreground="#d8c29a"/>
+                        <TextBlock Text="Future Prediction" FontWeight="Bold" Foreground="#d8b07a"/>
+                        <Border Background="#161008" BorderBrush="#352615" BorderThickness="1" CornerRadius="8" MinWidth="980" Height="320">
+                            <controls:LinePlotControl Series="{Binding EquationFuturePredictionSeries}"
+                                                      Title="Forward Projection Beyond The Latest Sequence Anchor"
+                                                      XAxisLabel="{Binding EquationDiscoveryXAxisLabel}"
+                                                      YAxisLabel="{Binding EquationDiscoveryYAxisLabel}"
+                                                      LightTheme="True"/>
+                        </Border>
+                        <TextBlock Text="{Binding EquationDiscoveryFutureLegendText}" Foreground="#d8c29a"/>
                         <TextBlock Text="Equation Playback" FontWeight="Bold" Foreground="#d8b07a"/>
                         <Border Background="#161008" BorderBrush="#352615" BorderThickness="1" CornerRadius="8" Padding="10">
                             <StackPanel Spacing="8">

@@ -1567,7 +1567,20 @@ def build_feature_ode_candidate(
         + max(0.0, metrics["rmse"] - FAIL_RMSE_THRESHOLD) * 0.85
         - 0.10 * float(playback_simulation.get("stabilityScore", 0.0))
     )
-    active_terms_sorted = sorted(active_terms, key=lambda term: term_names.index(term))
+    active_terms_sorted = [
+        "z(s, τ)",
+        "z_L(s, τ)",
+        "z_R(s, τ)",
+        "A_L(τ)",
+        "A_R(τ)",
+        "σ_L(τ)",
+        "σ_R(τ)",
+        "s_L(τ)",
+        "s_R(τ)",
+        "Δ(τ)",
+        "s_c",
+        *sorted(active_terms, key=lambda term: term_names.index(term)),
+    ]
     public_candidate = {
         "rankScore": rank_score,
         "equation": format_feature_system(term_names, coefficient_matrix),
@@ -1838,6 +1851,34 @@ def build_feature_coefficient_statistics(term_names: Sequence[str], coefficient_
     return output
 
 
+def feature_state_display_name(state_name: str) -> str:
+    return {
+        "A1": "A_L",
+        "A2": "A_R",
+        "D": "Δ",
+        "sigma1": "σ_L",
+        "sigma2": "σ_R",
+    }.get(state_name, state_name)
+
+
+def feature_term_display_name(term_name: str) -> str:
+    return {
+        "tau": "τ",
+        "tau^2": "τ^2",
+        "A1": "A_L",
+        "A2": "A_R",
+        "D": "Δ",
+        "sigma1": "σ_L",
+        "sigma2": "σ_R",
+        "A_mean": "A_mean",
+        "sigma_mean": "σ_mean",
+        "ratio_minus_1": "(A_L/A_R - 1)",
+        "D_over_sigma": "Δ/σ_mean",
+        "A_mean*tau": "A_mean*τ",
+        "D*tau": "Δ*τ",
+    }.get(term_name, term_name)
+
+
 def format_feature_equation_line(state_name: str, term_names: Sequence[str], coefficients: np.ndarray) -> str:
     parts = []
     for term_name, value in zip(term_names, coefficients):
@@ -1845,19 +1886,28 @@ def format_feature_equation_line(state_name: str, term_names: Sequence[str], coe
         if abs(coefficient) < 1e-10:
             continue
         formatted = f"{abs(coefficient):.4g}"
-        fragment = formatted if term_name == "1" else f"{formatted}*{term_name}"
+        display_term = feature_term_display_name(term_name)
+        fragment = formatted if term_name == "1" else f"{formatted}*{display_term}"
         parts.append(f"- {fragment}" if coefficient < 0 else f"+ {fragment}")
     if not parts:
-        return f"d{state_name}/dtau = 0"
+        return f"d{feature_state_display_name(state_name)}/dτ = 0"
     expression = " ".join(parts).lstrip("+ ")
-    return f"d{state_name}/dtau = {expression}"
+    return f"d{feature_state_display_name(state_name)}/dτ = {expression}"
 
 
 def format_feature_system(term_names: Sequence[str], coefficient_matrix: np.ndarray) -> str:
-    return "\n".join(
+    structural_lines = [
+        "z(s, τ) = z_L(s, τ) + z_R(s, τ)",
+        "z_L(s, τ) = A_L(τ) * exp(-((s - s_L(τ))^2) / (2σ_L(τ)^2))",
+        "z_R(s, τ) = A_R(τ) * exp(-((s - s_R(τ))^2) / (2σ_R(τ)^2))",
+        "s_L(τ) = s_c - Δ(τ)/2",
+        "s_R(τ) = s_c + Δ(τ)/2",
+    ]
+    evolution_lines = [
         format_feature_equation_line(state_name, term_names, coefficient_matrix[index])
         for index, state_name in enumerate(FEATURE_STATE_NAMES)
-    )
+    ]
+    return "\n".join(structural_lines + evolution_lines)
 
 
 def evaluate_feature_terms(state: np.ndarray, tau: float, tau_bounds: Tuple[float, float] | None = None) -> Dict[str, float]:

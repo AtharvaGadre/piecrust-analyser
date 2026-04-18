@@ -126,6 +126,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase
     [ObservableProperty] private string equationDiscoveryProfileModeText = "Current visual model: each image contributes 10 equidistant perpendicular guided profiles (corridor width +20%), those 10 profiles are averaged into one representative image profile, and playback is reconstructed from bimodal Gaussian feature dynamics.";
     [ObservableProperty] private string equationDiscoveryOverlayLegendText = "Colours follow sequence-derived pseudo-time from green to red. Solid lines = baseline-corrected reference profiles. Dashed lines = bimodal Gaussian reconstructions at the same ordered anchors.";
     [ObservableProperty] private string equationDiscoveryProgressionLegendText = "Bimodal feature-ODE progression over sequence-derived pseudo-time: each curve is reconstructed from the evolving left/right peak amplitudes, widths, and separation.";
+    [ObservableProperty] private string equationDiscoveryFutureLegendText = "Future prediction extends the current bimodal discovery law beyond the latest observed pseudo-time anchor so you can inspect how tramline separation and peak sharpening might continue.";
     [ObservableProperty] private string equationDiscoveryTermGuideText = "Term guide covers both discovered model families: bimodal Gaussian feature dynamics for playback and guided-profile field equations built from per-image averaged perpendicular profiles.";
     [ObservableProperty] private string equationDiscoveryXAxisLabel = "Perpendicular offset from guide centre z [nm]";
     [ObservableProperty] private string equationDiscoveryYAxisLabel = "Height above local baseline z [nm]";
@@ -134,6 +135,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase
     [ObservableProperty] private IReadOnlyList<EquationCandidateResult> equationFamily = Array.Empty<EquationCandidateResult>();
     [ObservableProperty] private IReadOnlyList<PolylineSeries> equationOverlaySeries = Array.Empty<PolylineSeries>();
     [ObservableProperty] private IReadOnlyList<PolylineSeries> equationProgressionSeries = Array.Empty<PolylineSeries>();
+    [ObservableProperty] private IReadOnlyList<PolylineSeries> equationFuturePredictionSeries = Array.Empty<PolylineSeries>();
     [ObservableProperty] private SimulationPlaybackModel? equationSimulationPlayback;
     [ObservableProperty] private IReadOnlyList<PolylineSeries> equationPlaybackSeries = Array.Empty<PolylineSeries>();
     [ObservableProperty] private double equationPlaybackFrameMaximum = 1;
@@ -858,6 +860,12 @@ public sealed partial class MainWindowViewModel : ViewModelBase
                 return;
             }
 
+            if (ApplySimulationAlignedEquationFamilyIfAvailable(result))
+            {
+                StatusText = $"Equation discovery complete. Showing {EquationFamily.Count} growth-model-aligned bimodal candidate equation(s).";
+                return;
+            }
+
             ApplyEquationDiscoveryResult(result);
             StatusText = $"Equation discovery complete. Showing {EquationFamily.Count} candidate equation(s) from distinct discovery methods.";
         }
@@ -1085,11 +1093,14 @@ public sealed partial class MainWindowViewModel : ViewModelBase
             "Dashed lines = bimodal Gaussian reconstructions evaluated at the matching ordered anchors.";
         EquationDiscoveryProgressionLegendText =
             "Reconstructed progression of h(z, tau): each coloured curve comes directly from the discovered bimodal feature ODE system, while the equation family also includes a guided-profile PDE-style law for the per-image averaged profiles.";
+        EquationDiscoveryFutureLegendText =
+            "Future prediction extrapolates the current bimodal discovery law beyond the latest observed pseudo-time anchor. Use it qualitatively to inspect continued tramline splitting, not as a measured reference.";
         EquationDiscoveryXAxisLabel = string.IsNullOrWhiteSpace(result.SpatialCoordinateLabel) ? "Aligned centreline position z [nm]" : result.SpatialCoordinateLabel;
         EquationDiscoveryYAxisLabel = string.IsNullOrWhiteSpace(result.HeightLabel) ? "Height above local baseline z [nm]" : result.HeightLabel;
         EquationTermExplanations = BuildEquationTermExplanations(result.EquationFamily);
         EquationOverlaySeries = BuildEquationOverlaySeries(result);
         EquationProgressionSeries = BuildEquationProgressionSeries(result);
+        EquationFuturePredictionSeries = BuildEquationFuturePredictionSeries(result);
         LoadEquationPlayback(result);
     }
 
@@ -1103,6 +1114,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase
         EquationFamily = Array.Empty<EquationCandidateResult>();
         EquationOverlaySeries = Array.Empty<PolylineSeries>();
         EquationProgressionSeries = Array.Empty<PolylineSeries>();
+        EquationFuturePredictionSeries = Array.Empty<PolylineSeries>();
         EquationPlaybackSeries = Array.Empty<PolylineSeries>();
         EquationPlaybackFrameMaximum = 1;
         EquationPlaybackFramePosition = 0;
@@ -1120,6 +1132,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase
         EquationDiscoveryProfileModeText = "Current visual model: each playback frame is reconstructed from two Gaussian tramline peaks whose amplitudes, widths, and separation evolve under a discovered ODE system over normalised tau.";
         EquationDiscoveryOverlayLegendText = "Colours follow sequence-derived pseudo-time from green to red. Solid lines = baseline-corrected reference profiles. Dashed lines = bimodal Gaussian reconstructions at the same ordered anchors.";
         EquationDiscoveryProgressionLegendText = "Bimodal feature-ODE progression over sequence-derived pseudo-time: each curve is reconstructed from the evolving left/right peak amplitudes, widths, and separation.";
+        EquationDiscoveryFutureLegendText = "Future prediction will appear here after equation discovery and extends the current bimodal law beyond the latest observed pseudo-time anchor.";
         EquationDiscoveryTermGuideText = "Bimodal feature guide: A1 and A2 are left/right peak heights, sigma1 and sigma2 are widths, D is peak separation, mu1 and mu2 are the implied centres, and tau is sequence-derived progression rather than real time.";
         EquationDiscoveryXAxisLabel = "Aligned centreline position z [nm]";
         EquationDiscoveryYAxisLabel = "Height above local baseline z [nm]";
@@ -1171,8 +1184,12 @@ public sealed partial class MainWindowViewModel : ViewModelBase
 
     private void LoadEquationPlayback(EquationDiscoveryResult result)
     {
+        LoadEquationPlaybackPayload(result.SimulationPlayback);
+    }
+
+    private void LoadEquationPlaybackPayload(EquationDiscoverySimulationPlayback? playback)
+    {
         StopEquationPlayback();
-        var playback = result.SimulationPlayback;
         if (playback is null || !playback.Success || playback.Profiles.Count == 0)
         {
             SubscribeEquationPlaybackModel(null);
@@ -1382,6 +1399,19 @@ public sealed partial class MainWindowViewModel : ViewModelBase
             .ToArray();
     }
 
+    private static IReadOnlyList<PolylineSeries> BuildEquationFuturePredictionSeries(EquationDiscoveryResult result)
+    {
+        return result.FuturePredictionProfiles
+            .OrderBy(curve => curve.Tau)
+            .Select(curve => new PolylineSeries(
+                curve.Points.Select(point => point.ToPlotPoint()).ToArray(),
+                GetPseudoTimeColor(Math.Min(1.0, curve.Tau)),
+                2.1,
+                0.86,
+                Dashed: true))
+            .ToArray();
+    }
+
     private static Dictionary<string, double> BuildSequencePseudoTimeMapping(IReadOnlyList<int> sequenceOrders)
     {
         var mapping = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
@@ -1464,7 +1494,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase
         return "#cf6a4d";
     }
 
-    private bool ApplySimulationAlignedEquationFamilyIfAvailable()
+    private bool ApplySimulationAlignedEquationFamilyIfAvailable(EquationDiscoveryResult? result = null)
     {
         var simulation = GetOrBuildSimulationCache();
         if (simulation is null || simulation.Frames.Count < 3) return false;
@@ -1472,11 +1502,13 @@ public sealed partial class MainWindowViewModel : ViewModelBase
         var candidates = BuildSimulationEquationCandidates(simulation);
         if (candidates.Count == 0) return false;
 
+        _equationDiscoveryResult = result ?? _equationDiscoveryResult;
         _simulationEquationCandidates = candidates;
         EquationDiscoveryStageProfiles = BuildSimulationEquationStageProfiles(simulation);
         EquationFamily = candidates.Select(candidate => candidate.Display).ToArray();
         EquationOverlaySeries = BuildSimulationEquationOverlaySeries(simulation, candidates[0]);
         EquationProgressionSeries = BuildSimulationEquationProgressionSeries(simulation, candidates[0]);
+        EquationFuturePredictionSeries = BuildSimulationEquationFuturePredictionSeries(simulation, candidates[0]);
         EquationDiscoveryStageMappingText = "Sequence anchors: " + string.Join("  |  ",
             simulation.References
                 .OrderBy(reference => reference.Position01)
@@ -1484,31 +1516,78 @@ public sealed partial class MainWindowViewModel : ViewModelBase
         EquationDiscoveryStatusText = $"Showing {candidates.Count} strict bimodal polynomial candidate(s) aligned to the current growth-model trajectory.";
         EquationDiscoveryProfileModeText =
             "Current reduced model: z(s, tau) = z_L(s, tau) + z_R(s, tau), with A_L, sigma_L, A_R, sigma_R, and Delta each evolving as low-order polynomials over sequence-derived tau.";
+        var validationText = result?.StageValidation is { ValidatorAvailable: true } validation
+            ? $" Stage validation confidence: {validation.ConfidenceScore:P0} ({validation.Recommendation})."
+            : string.Empty;
+        var metaPrefix = string.IsNullOrWhiteSpace(result?.MetaModelSummary) ? string.Empty : $"{result!.MetaModelSummary} ";
         EquationDiscoveryMetaText =
+            metaPrefix +
             $"Sequence order sets the pseudo-time anchors. The displayed family is constrained to two persistent rim peaks, while polynomial coefficients control left/right height, left/right width, and tramline separation up to degree {simulation.PolynomialDegree}.";
+        EquationDiscoveryMetaText += validationText;
         EquationDiscoveryOverlayLegendText =
             "Colours follow sequence-derived pseudo-time from green to red. Solid lines = baseline-corrected reference profiles extracted from the current simulation references. Dashed lines = strict bimodal reconstructions from the parameter-evolution equations at those same ordered anchors.";
         EquationDiscoveryProgressionLegendText =
             "Coloured curves show the same strict bimodal evolution law used by the Growth Model simulation, expressed as polynomial parameter equations over sequence-derived pseudo-time.";
+        EquationDiscoveryFutureLegendText =
+            "Dashed forecast curves extend the same strict bimodal Gaussian growth law beyond the latest observed sequence anchor so you can inspect the next plausible tramline-splitting states qualitatively.";
         EquationDiscoveryTermGuideText =
             "Bimodal model guide: z(s, tau) is explicitly written as z_L(s, tau) + z_R(s, tau), so the discovered family remains two-peaked across pseudo-time rather than collapsing to a single Gaussian. A_L and A_R are the left and right peak heights, sigma_L and sigma_R are the corresponding Gaussian widths, Delta is the peak-to-peak spacing, s_c is the fixed centred reference position, and tau is sequence-derived progression rather than real time.";
         EquationDiscoveryXAxisLabel = simulation.UsesGuidedAlignment ? $"Centered corridor offset [{simulation.Unit}]" : $"Centered x [{simulation.Unit}]";
         EquationDiscoveryYAxisLabel = $"Height above local baseline [{simulation.Unit}]";
         EquationTermExplanations = BuildEquationTermExplanations(candidates.Select(candidate => candidate.Display));
-        StopEquationPlayback();
-        SubscribeEquationPlaybackModel(null);
-        EquationPlaybackSeries = Array.Empty<PolylineSeries>();
-        EquationPlaybackFrameMaximum = 1;
-        EquationPlaybackFramePosition = 0;
-        EquationPlaybackTauText = "Tau: -";
-        EquationPlaybackHeightText = "Height: -";
-        EquationPlaybackWidthText = "Width: -";
-        EquationPlaybackFixedXMin = double.NaN;
-        EquationPlaybackFixedXMax = double.NaN;
-        EquationPlaybackFixedYMin = double.NaN;
-        EquationPlaybackFixedYMax = double.NaN;
-        EquationPlaybackStatusText = "Playback is only available for the Python-discovered equation family, not the simulation-aligned fallback.";
+        LoadEquationPlaybackPayload(BuildSimulationEquationPlayback(simulation, candidates[0]));
         return true;
+    }
+
+    private EquationDiscoverySimulationPlayback BuildSimulationEquationPlayback(SurfaceSimulationResult simulation, SimulationEquationCandidate candidate)
+    {
+        var playbackCurves = new List<EquationDiscoveryCurve>(simulation.FrameProgresses.Count);
+        var heights = new List<double>(simulation.FrameProgresses.Count);
+        var widths = new List<double>(simulation.FrameProgresses.Count);
+
+        for (var index = 0; index < simulation.FrameProgresses.Count; index++)
+        {
+            var tau = simulation.FrameProgresses[index];
+            var parameters = EvaluateSimulationEquationCandidate(candidate, tau);
+            var profile = _analysis.BuildCenteredBimodalProfileFromParameters(parameters, simulation.Width, simulation.ScanSizeNmX);
+            if (profile.Count == 0)
+            {
+                profile = _analysis.BuildBimodalPolynomialSimulationProfile(simulation, tau);
+            }
+            if (profile.Count == 0 && index < simulation.Frames.Count)
+            {
+                profile = _analysis.BuildCenteredBimodalSimulationProfile(
+                    simulation.Frames[index],
+                    simulation.Width,
+                    simulation.Height,
+                    simulation.ScanSizeNmX);
+            }
+
+            playbackCurves.Add(new EquationDiscoveryCurve
+            {
+                Label = $"Growth-model tau {tau:F2}",
+                Stage = "playback",
+                Kind = "simulationPlayback",
+                Tau = tau,
+                Points = profile
+                    .Select(point => new EquationDiscoveryPoint { X = point.X, Y = point.Y })
+                    .ToArray()
+            });
+            heights.Add(ComputeProfilePeakHeight(profile));
+            widths.Add(ComputeProfileWidthNm(profile));
+        }
+
+        return new EquationDiscoverySimulationPlayback
+        {
+            Success = playbackCurves.Count > 0,
+            Tau = simulation.FrameProgresses.ToArray(),
+            SimulatedHeight = heights,
+            SimulatedWidth = widths,
+            Profiles = playbackCurves,
+            EnvelopeProfiles = Array.Empty<EquationDiscoveryCurve>(),
+            StabilityScore = candidate.Display.StabilityScore,
+            Note = "Playback now follows the same strict bimodal Gaussian growth-model equation family shown in the Growth Model tab."
+        };
     }
 
     private IReadOnlyList<EquationDiscoveryStageProfile> BuildSimulationEquationStageProfiles(SurfaceSimulationResult simulation)
@@ -1783,6 +1862,25 @@ public sealed partial class MainWindowViewModel : ViewModelBase
             .ToArray();
     }
 
+    private IReadOnlyList<PolylineSeries> BuildSimulationEquationFuturePredictionSeries(SurfaceSimulationResult simulation, SimulationEquationCandidate candidate)
+    {
+        return Enumerable.Range(0, 6)
+            .Select(index => 1.05 + index * 0.09)
+            .Select(tau =>
+            {
+                var parameters = EvaluateSimulationEquationCandidate(candidate, tau);
+                var profile = _analysis.BuildCenteredBimodalProfileFromParameters(parameters, simulation.Width, simulation.ScanSizeNmX);
+                return new PolylineSeries(
+                    profile.ToArray(),
+                    GetPseudoTimeColor(1.0),
+                    2.0,
+                    0.84,
+                    Dashed: true);
+            })
+            .Where(series => series.Points.Count > 1)
+            .ToArray();
+    }
+
     private double[] EvaluateSimulationEquationCandidate(SimulationEquationCandidate candidate, double tau)
     {
         return EvaluateSimulationEquationCandidate(
@@ -1957,6 +2055,16 @@ public sealed partial class MainWindowViewModel : ViewModelBase
             "mu1" => "s_L(τ), s_R(τ)",
             "mu2" => "s_L(τ), s_R(τ)",
             "z" => "z(s, τ)",
+            "z_L(s,τ)" => "z_L(s, τ), z_R(s, τ)",
+            "z_R(s,τ)" => "z_L(s, τ), z_R(s, τ)",
+            "z_L(s, τ)" => "z_L(s, τ), z_R(s, τ)",
+            "z_R(s, τ)" => "z_L(s, τ), z_R(s, τ)",
+            "A_L(τ)" => "A_L(τ), A_R(τ)",
+            "A_R(τ)" => "A_L(τ), A_R(τ)",
+            "σ_L(τ)" => "σ_L(τ), σ_R(τ)",
+            "σ_R(τ)" => "σ_L(τ), σ_R(τ)",
+            "s_L(τ)" => "s_L(τ), s_R(τ)",
+            "s_R(τ)" => "s_L(τ), s_R(τ)",
             _ => trimmed
         };
     }

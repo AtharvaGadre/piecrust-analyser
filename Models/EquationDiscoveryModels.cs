@@ -85,6 +85,7 @@ public sealed class EquationDiscoveryResult
     public IReadOnlyList<EquationDiscoveryCurve> ObservedProfiles { get; init; } = Array.Empty<EquationDiscoveryCurve>();
     public IReadOnlyList<EquationDiscoveryCurve> ReconstructedProfiles { get; init; } = Array.Empty<EquationDiscoveryCurve>();
     public IReadOnlyList<EquationDiscoveryCurve> ProgressionProfiles { get; init; } = Array.Empty<EquationDiscoveryCurve>();
+    public IReadOnlyList<EquationDiscoveryCurve> FuturePredictionProfiles { get; init; } = Array.Empty<EquationDiscoveryCurve>();
     public EquationDiscoveryBimodalFeatureExtraction? BimodalFeatureExtraction { get; init; }
     public EquationDiscoverySimulationPlayback? SimulationPlayback { get; init; }
     public EquationDiscoveryUnitySpherePlayback? UnitySpherePlayback { get; init; }
