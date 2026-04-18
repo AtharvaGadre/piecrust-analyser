@@ -212,10 +212,16 @@ jobs:
       - name: Download packaged desktop artifacts
         uses: actions/download-artifact@v4
         with:
+          pattern: pie-crust-analyser-*
+          merge-multiple: true
           path: release-assets
 
       - name: Publish GitHub Release assets
         uses: softprops/action-gh-release@v2
         with:
+          name: Pie Crust Analyser ${{ github.ref_name }}
+          tag_name: ${{ github.ref_name }}
           generate_release_notes: true
-          files: release-assets/**/*.zip
+          files: release-assets/*.zip
+          fail_on_unmatched_files: true
+          overwrite_files: true
