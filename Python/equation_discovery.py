@@ -362,12 +362,54 @@ def fwhm_width(x_nm: np.ndarray, z_nm: np.ndarray) -> float:
     return max(0.0, float(x_nm[right] - x_nm[left]))
 
 
+def find_profile_peaks(x_nm: np.ndarray, z_nm: np.ndarray) -> List[Tuple[int, float, float, float]]:
+    profile = np.asarray(z_nm, dtype=float)
+    offsets = np.asarray(x_nm, dtype=float)
+    if profile.size < 3 or offsets.size != profile.size:
+        return []
+    edge = max(2, int(math.floor(profile.size * 0.12)))
+    baseline = float(
+        (np.mean(profile[:edge]) + np.mean(profile[-edge:])) * 0.5
+    )
+    peak_max = float(np.max(profile))
+    threshold = baseline + max((peak_max - baseline) * 0.08, 1e-3)
+    peaks: List[Tuple[int, float, float, float]] = []
+    for index in range(1, profile.size - 1):
+        if profile[index] < profile[index - 1] or profile[index] < profile[index + 1] or profile[index] < threshold:
+            continue
+        peaks.append((index, float(profile[index]), float(offsets[index]), baseline))
+    peaks.sort(key=lambda item: item[1], reverse=True)
+    return peaks
+
+
+def peak_separation_width(x_nm: np.ndarray, z_nm: np.ndarray) -> float:
+    peaks = find_profile_peaks(x_nm, z_nm)
+    if len(peaks) < 2:
+        return 0.0
+    dominant = sorted(peaks[:2], key=lambda item: item[2])
+    return max(0.0, float(abs(dominant[1][2] - dominant[0][2])))
+
+
+def profile_width_nm(x_nm: np.ndarray, z_nm: np.ndarray) -> float:
+    separation = peak_separation_width(x_nm, z_nm)
+    if separation > 1e-9:
+        return separation
+    return fwhm_width(x_nm, z_nm)
+
+
 def dip_depth(z_nm: np.ndarray) -> float:
     if len(z_nm) < 5:
         return 0.0
-    left_peak_idx = int(np.argmax(z_nm[: max(2, len(z_nm) // 2)]))
-    right_half = z_nm[len(z_nm) // 2 :]
-    right_peak_idx = len(z_nm) // 2 + int(np.argmax(right_half))
+    offsets = np.arange(len(z_nm), dtype=float)
+    peaks = find_profile_peaks(offsets, z_nm)
+    if len(peaks) >= 2:
+        dominant = sorted(peaks[:2], key=lambda item: item[2])
+        left_peak_idx = dominant[0][0]
+        right_peak_idx = dominant[1][0]
+    else:
+        left_peak_idx = int(np.argmax(z_nm[: max(2, len(z_nm) // 2)]))
+        right_half = z_nm[len(z_nm) // 2 :]
+        right_peak_idx = len(z_nm) // 2 + int(np.argmax(right_half))
     if right_peak_idx <= left_peak_idx + 1:
         return 0.0
     valley = float(np.min(z_nm[left_peak_idx:right_peak_idx + 1]))
@@ -375,17 +417,12 @@ def dip_depth(z_nm: np.ndarray) -> float:
 
 
 def peak_separation(x_nm: np.ndarray, z_nm: np.ndarray) -> float:
-    if len(z_nm) < 5:
-        return 0.0
-    left_peak_idx = int(np.argmax(z_nm[: max(2, len(z_nm) // 2)]))
-    right_half = z_nm[len(z_nm) // 2 :]
-    right_peak_idx = len(z_nm) // 2 + int(np.argmax(right_half))
-    return max(0.0, float(abs(x_nm[right_peak_idx] - x_nm[left_peak_idx])))
+    return peak_separation_width(x_nm, z_nm)
 
 
 def compromise_ratio_from_profile(x_nm: np.ndarray, z_nm: np.ndarray) -> float:
     height = max(0.0, float(np.max(z_nm)))
-    width = fwhm_width(x_nm, z_nm)
+    width = profile_width_nm(x_nm, z_nm)
     removal = max(0.0, dip_depth(z_nm) + 0.15 * width)
     return removal / max(1e-9, height + removal)
 
@@ -530,7 +567,7 @@ def build_mixed_growth_model(individual_profiles: Sequence[np.ndarray], tau_valu
     parameter_coefficients = [fit_polynomial_curve(tau, parameters[:, index], degree) for index in range(parameters.shape[1])]
 
     heights = np.maximum(0.0, np.max(observed, axis=1))
-    widths = np.array([fwhm_width(grid, profile) for profile in observed], dtype=float)
+    widths = np.array([profile_width_nm(grid, profile) for profile in observed], dtype=float)
     monotone_heights = np.maximum.accumulate(heights)
     monotone_widths = np.maximum.accumulate(np.maximum(0.0, widths))
 
@@ -599,7 +636,7 @@ def evaluate_mixed_growth_profile(model: dict, tau: float) -> Tuple[np.ndarray, 
     height_targets = np.asarray(model.get("heightTargets", []), dtype=float)
     width_targets = np.asarray(model.get("widthTargets", []), dtype=float)
     target_height = float(np.interp(clamped_tau, tau_samples, height_targets)) if tau_samples.size and height_targets.size == tau_samples.size else float(np.max(mixed))
-    target_width = float(np.interp(clamped_tau, tau_samples, width_targets)) if tau_samples.size and width_targets.size == tau_samples.size else fwhm_width(grid, mixed)
+    target_width = float(np.interp(clamped_tau, tau_samples, width_targets)) if tau_samples.size and width_targets.size == tau_samples.size else profile_width_nm(grid, mixed)
 
     envelope_height = float(np.max(envelope)) if envelope.size else 0.0
     target_height = max(target_height, envelope_height)
@@ -607,7 +644,7 @@ def evaluate_mixed_growth_profile(model: dict, tau: float) -> Tuple[np.ndarray, 
     if current_height > 1e-9 and target_height > 0.0:
         mixed *= target_height / current_height
 
-    current_width = fwhm_width(grid, mixed)
+    current_width = profile_width_nm(grid, mixed)
     if current_width > 1e-6 and target_width > 1e-6:
         width_scale = float(np.clip(target_width / current_width, 0.85, 1.18))
         center = float((grid[0] + grid[-1]) * 0.5) if len(grid) > 1 else 0.0
@@ -706,7 +743,7 @@ def prepare_guided_profile(source: dict, item: dict, local_index: int) -> dict |
     anchor = center_profile_anchor(s_nm, corrected)
     aligned_s = s_nm - anchor
 
-    width_nm = fwhm_width(aligned_s, corrected)
+    width_nm = profile_width_nm(aligned_s, corrected)
     height_nm = max(0.0, float(np.max(corrected)))
     ratio = height_nm / max(1e-9, width_nm)
     roughness = float(np.mean(np.abs(z_nm - smoothed)))
@@ -774,7 +811,7 @@ def average_prepared_guided_profiles(processed_profiles: Sequence[dict]) -> dict
     averaged_corrected = smooth_profile(np.asarray(averaged_corrected, dtype=float))
 
     height_nm = max(0.0, float(np.max(averaged_corrected)))
-    width_nm = fwhm_width(local_grid, averaged_corrected)
+    width_nm = profile_width_nm(local_grid, averaged_corrected)
     ratio = height_nm / max(1e-9, width_nm)
     roughness = float(np.mean([profile["roughnessNm"] for profile in processed_profiles]))
 
@@ -1444,6 +1481,7 @@ def flatten_feature_coefficients(term_names: Sequence[str], coefficient_matrix: 
 
 def candidate_signature(candidate: dict) -> Tuple:
     model_type = str(candidate.get("modelType", "unknown"))
+    discovery_method = str(candidate.get("discoveryMethod", model_type))
     coefficients = candidate.get("coefficients", {})
     signature_terms = []
     for term_name in sorted(coefficients.keys(), key=term_sort_key):
@@ -1451,7 +1489,183 @@ def candidate_signature(candidate: dict) -> Tuple:
         if abs(value) < 1e-10:
             continue
         signature_terms.append((term_name, round(value, 8)))
-    return (model_type, tuple(signature_terms))
+    return (model_type, discovery_method, tuple(signature_terms))
+
+
+def build_feature_ode_candidate(
+    term_names: Sequence[str],
+    coefficient_matrix: np.ndarray,
+    individual_profiles: Sequence[np.ndarray],
+    observed_tau: np.ndarray,
+    metadata: Sequence[dict],
+    grid: np.ndarray,
+    discrete_feature_series: dict,
+    initial_state: np.ndarray,
+    min_sigma: float,
+    rate_cap: float,
+    tau_bounds: Tuple[float, float],
+    meta_priors: Dict[str, float],
+    *,
+    discovery_method: str,
+    method_label: str,
+    notes_prefix: str,
+) -> Tuple[dict, dict] | None:
+    active_terms = {
+        term_names[index]
+        for index in range(len(term_names))
+        if np.any(np.abs(coefficient_matrix[:, index]) >= 1e-10)
+    }
+    if not active_terms:
+        return None
+
+    metrics, observed_simulation = evaluate_feature_candidate(
+        term_names,
+        coefficient_matrix,
+        individual_profiles,
+        observed_tau,
+        metadata,
+        grid,
+        discrete_feature_series,
+        min_sigma,
+        rate_cap,
+        tau_bounds,
+    )
+    if not np.isfinite(metrics["rmse"]):
+        return None
+
+    playback_simulation = simulate_bimodal_feature_system(
+        term_names,
+        coefficient_matrix,
+        initial_state,
+        np.linspace(float(tau_bounds[0]), float(tau_bounds[1]), 60),
+        grid,
+        min_sigma,
+        rate_cap,
+        tau_bounds=tau_bounds,
+    )
+    complexity_penalty = len(active_terms) / max(1, len(term_names))
+    meta_prior_score = float(np.mean([meta_priors.get(term, 0.0) for term in active_terms])) if active_terms else 0.0
+    rmse_factor = float(metrics.get("rmseQualityFactor", rmse_quality_factor(metrics["rmse"])))
+    feature_rmse_factor = float(rmse_quality_factor(metrics["featureRmse"]))
+    confidence = float(np.clip(
+        0.34 * float(playback_simulation.get("stabilityScore", 0.0))
+        + 0.24 * metrics["compromiseConsistency"]
+        + 0.18 * rmse_factor
+        + 0.14 * feature_rmse_factor
+        + 0.10 * (1.0 - complexity_penalty),
+        0.0,
+        1.0,
+    ))
+    rank_score = (
+        metrics["rmse"]
+        + 0.12 * metrics["featureRmse"]
+        + 0.10 * metrics["peakHeightError"]
+        + 0.08 * metrics["widthError"]
+        + 0.04 * metrics["areaError"]
+        + 0.10 * complexity_penalty
+        + max(0.0, metrics["rmse"] - GOOD_RMSE_THRESHOLD) * 0.45
+        + max(0.0, metrics["rmse"] - FAIL_RMSE_THRESHOLD) * 0.85
+        - 0.10 * float(playback_simulation.get("stabilityScore", 0.0))
+    )
+    active_terms_sorted = sorted(active_terms, key=lambda term: term_names.index(term))
+    public_candidate = {
+        "rankScore": rank_score,
+        "equation": format_feature_system(term_names, coefficient_matrix),
+        "methodLabel": method_label,
+        "discoveryMethod": discovery_method,
+        "activeTerms": active_terms_sorted,
+        "coefficients": flatten_feature_coefficients(term_names, coefficient_matrix),
+        "coefficientStatistics": build_feature_coefficient_statistics(term_names, coefficient_matrix),
+        "rmse": metrics["rmse"],
+        "peakHeightError": metrics["peakHeightError"],
+        "widthError": metrics["widthError"],
+        "areaError": metrics["areaError"],
+        "compromiseConsistency": metrics["compromiseConsistency"],
+        "stabilityScore": float(playback_simulation.get("stabilityScore", 0.0)),
+        "complexityPenalty": complexity_penalty,
+        "confidence": confidence,
+        "pseudotimeSensitivity": metrics["featureRmse"],
+        "bootstrapSupport": 1.0,
+        "metaPriorScore": meta_prior_score,
+        "modelType": "bimodal_feature_ode",
+        "notes": (
+            f"{notes_prefix} {str(playback_simulation.get('note', 'Bimodal feature ODE candidate.'))} "
+            f"RMSE quality: {metrics.get('rmseQualityLabel', rmse_quality_label(metrics['rmse']))} "
+            f"(track={metrics.get('trackRmse', metrics['rmse']):.2f} nm, image-mean={metrics.get('sequenceRmse', metrics['rmse']):.2f} nm, "
+            f"target <= {GOOD_RMSE_THRESHOLD:.0f} nm, fail > {FAIL_RMSE_THRESHOLD:.0f} nm)."
+        ),
+    }
+    internal_candidate = {
+        "coefficientMatrix": coefficient_matrix,
+        "playbackSimulation": playback_simulation,
+        "observedSimulation": observed_simulation,
+        "discoveryMethod": discovery_method,
+    }
+    return public_candidate, internal_candidate
+
+
+def discover_best_sparse_feature_candidate(
+    theta: np.ndarray,
+    target_matrix: np.ndarray,
+    threshold_scales: np.ndarray,
+    term_names: Sequence[str],
+    individual_profiles: Sequence[np.ndarray],
+    observed_tau: np.ndarray,
+    metadata: Sequence[dict],
+    grid: np.ndarray,
+    discrete_feature_series: dict,
+    initial_state: np.ndarray,
+    min_sigma: float,
+    rate_cap: float,
+    tau_bounds: Tuple[float, float],
+    meta_priors: Dict[str, float],
+    *,
+    discovery_method: str,
+    method_label: str,
+    notes_prefix: str,
+    term_priors: Dict[str, float],
+    threshold_multiplier: float = 1.0,
+) -> Tuple[dict, dict] | None:
+    best_by_signature: Dict[Tuple, Tuple[dict, dict]] = {}
+    for threshold in DEFAULT_THRESHOLDS:
+        coefficient_matrix = np.zeros((len(FEATURE_STATE_NAMES), len(term_names)), dtype=float)
+        for state_index in range(len(FEATURE_STATE_NAMES)):
+            coefficient_matrix[state_index] = sequential_thresholded_least_squares(
+                theta,
+                target_matrix[:, state_index],
+                threshold_multiplier * threshold * threshold_scales[state_index],
+                ridge_alpha=1e-5,
+                term_names=term_names,
+                term_priors=term_priors,
+            )
+
+        candidate_pair = build_feature_ode_candidate(
+            term_names,
+            coefficient_matrix,
+            individual_profiles,
+            observed_tau,
+            metadata,
+            grid,
+            discrete_feature_series,
+            initial_state,
+            min_sigma,
+            rate_cap,
+            tau_bounds,
+            meta_priors,
+            discovery_method=discovery_method,
+            method_label=method_label,
+            notes_prefix=notes_prefix,
+        )
+        if candidate_pair is None:
+            continue
+        signature = candidate_signature(candidate_pair[0])
+        current_best = best_by_signature.get(signature)
+        if current_best is None or candidate_pair[0]["rankScore"] < current_best[0]["rankScore"]:
+            best_by_signature[signature] = candidate_pair
+
+    if not best_by_signature:
+        return None
+    return min(best_by_signature.values(), key=lambda item: (item[0]["rankScore"], -item[0]["confidence"]))
 
 
 def feature_state_from_profile(grid: np.ndarray, profile: np.ndarray) -> np.ndarray:
@@ -1508,7 +1722,7 @@ def compute_profile_error_metrics(predicted_profiles: Sequence[np.ndarray], obse
         for predicted, observed in zip(predicted_profiles, observed_profiles)
     ]))
     width_error = float(np.mean([
-        abs(fwhm_width(grid, predicted) - fwhm_width(grid, observed))
+        abs(profile_width_nm(grid, predicted) - profile_width_nm(grid, observed))
         for predicted, observed in zip(predicted_profiles, observed_profiles)
     ]))
     area_error = float(np.mean([
@@ -2006,6 +2220,8 @@ def discover_guided_profile_pde_candidate(
         candidate = {
             "rankScore": rank_score,
             "equation": format_equation(coefficients),
+            "methodLabel": "Guided Profile PDE",
+            "discoveryMethod": "guided_profile_pde",
             "activeTerms": sorted(active_terms, key=term_sort_key),
             "coefficients": coefficients,
             "coefficientStatistics": coefficient_statistics,
@@ -2053,6 +2269,8 @@ def discover_guided_profile_pde_candidate(
     return {
         "rankScore": float(np.mean(np.square(target - theta @ coefficient_vector))),
         "equation": format_equation(coefficients),
+        "methodLabel": "Guided Profile PDE (Ridge Fallback)",
+        "discoveryMethod": "guided_profile_pde_ridge_fallback",
         "activeTerms": sorted(coefficients.keys(), key=term_sort_key),
         "coefficients": coefficients,
         "coefficientStatistics": coefficient_statistics,
@@ -2087,7 +2305,7 @@ def build_simulation_playback(grid: np.ndarray, simulation: dict) -> dict:
         "success": bool(simulation.get("success", False)),
         "tau": [float(tau) for tau in tau_grid],
         "simulatedHeight": [float(np.max(profile)) for profile in profiles],
-        "simulatedWidth": [float(fwhm_width(grid, profile)) for profile in profiles],
+        "simulatedWidth": [float(profile_width_nm(grid, profile)) for profile in profiles],
         "simulatedPeakSeparation": [float(value) for value in states.get("D", [])],
         "simulatedSigmaLeft": [float(value) for value in states.get("sigma1", [])],
         "simulatedSigmaRight": [float(value) for value in states.get("sigma2", [])],
@@ -2231,225 +2449,140 @@ def fit_equation_discovery(dataset: dict, archive_path: str) -> dict:
     )
     rate_cap = max(5.0, 4.0 * float(np.max(np.abs(target_matrix)))) if target_matrix.size else 5.0
 
-    equation_family = []
-    internal_candidates = []
-    for threshold in DEFAULT_THRESHOLDS:
-        coefficient_matrix = np.zeros((len(FEATURE_STATE_NAMES), len(feature_term_names)), dtype=float)
-        active_terms = set()
-        for state_index, state_name in enumerate(FEATURE_STATE_NAMES):
-            coefficients = sequential_thresholded_least_squares(
-                theta,
-                target_matrix[:, state_index],
-                threshold * threshold_scales[state_index],
-                ridge_alpha=1e-5,
-                term_names=feature_term_names,
-                term_priors={},
-            )
-            coefficient_matrix[state_index] = coefficients
-            active_terms.update(
-                feature_term_names[index]
-                for index, value in enumerate(coefficients)
-                if abs(float(value)) >= 1e-10
-            )
+    feature_method_pairs: List[Tuple[dict, dict]] = []
+    sparse_feature_pair = discover_best_sparse_feature_candidate(
+        theta,
+        target_matrix,
+        threshold_scales,
+        feature_term_names,
+        individual_profiles_list,
+        tau_values,
+        individual_metadata,
+        grid,
+        discrete_feature_series,
+        initial_state,
+        min_sigma,
+        rate_cap,
+        (tau_min, tau_max),
+        meta_priors,
+        discovery_method="sparse_stlsq_feature_ode",
+        method_label="Sparse STLSQ Feature ODE",
+        notes_prefix="Method: sparse sequential thresholded least squares.",
+        term_priors={},
+    )
+    if sparse_feature_pair is not None:
+        feature_method_pairs.append(sparse_feature_pair)
 
-        if not active_terms:
-            continue
+    ridge_matrix = np.zeros((len(FEATURE_STATE_NAMES), len(feature_term_names)), dtype=float)
+    for state_index in range(len(FEATURE_STATE_NAMES)):
+        ridge_matrix[state_index] = ridge_least_squares(theta, target_matrix[:, state_index], ridge_alpha=1e-4)
+    ridge_feature_pair = build_feature_ode_candidate(
+        feature_term_names,
+        ridge_matrix,
+        individual_profiles_list,
+        tau_values,
+        individual_metadata,
+        grid,
+        discrete_feature_series,
+        initial_state,
+        min_sigma,
+        rate_cap,
+        (tau_min, tau_max),
+        meta_priors,
+        discovery_method="ridge_feature_ode",
+        method_label="Ridge-Regularized Feature ODE",
+        notes_prefix="Method: ridge-regularized feature ODE.",
+    )
+    if ridge_feature_pair is not None:
+        feature_method_pairs.append(ridge_feature_pair)
 
-        metrics, observed_simulation = evaluate_feature_candidate(
-            feature_term_names,
-            coefficient_matrix,
-            individual_profiles_list,
-            tau_values,
-            individual_metadata,
-            grid,
-            discrete_feature_series,
-            min_sigma,
-            rate_cap,
-            (tau_min, tau_max),
-        )
-        if not np.isfinite(metrics["rmse"]):
-            continue
+    prior_guided_feature_pair = discover_best_sparse_feature_candidate(
+        theta,
+        target_matrix,
+        threshold_scales,
+        feature_term_names,
+        individual_profiles_list,
+        tau_values,
+        individual_metadata,
+        grid,
+        discrete_feature_series,
+        initial_state,
+        min_sigma,
+        rate_cap,
+        (tau_min, tau_max),
+        meta_priors,
+        discovery_method="prior_guided_stlsq_feature_ode",
+        method_label="Prior-Guided Sparse Feature ODE",
+        notes_prefix="Method: sparse STLSQ feature ODE biased by archive-derived term priors.",
+        term_priors=meta_priors,
+        threshold_multiplier=0.9,
+    )
+    if prior_guided_feature_pair is not None:
+        feature_method_pairs.append(prior_guided_feature_pair)
 
-        playback_simulation = simulate_bimodal_feature_system(
-            feature_term_names,
-            coefficient_matrix,
-            initial_state,
-            np.linspace(tau_min, tau_max, 60),
-            grid,
-            min_sigma,
-            rate_cap,
-            tau_bounds=(tau_min, tau_max),
-        )
-        complexity_penalty = len(active_terms) / max(1, len(feature_term_names))
-        meta_prior_score = float(np.mean([meta_priors.get(term, 0.0) for term in active_terms])) if active_terms else 0.0
-        rmse_factor = float(metrics.get("rmseQualityFactor", rmse_quality_factor(metrics["rmse"])))
-        feature_rmse_factor = float(rmse_quality_factor(metrics["featureRmse"]))
-        confidence = float(np.clip(
-            0.34 * float(playback_simulation.get("stabilityScore", 0.0))
-            + 0.24 * metrics["compromiseConsistency"]
-            + 0.18 * rmse_factor
-            + 0.14 * feature_rmse_factor
-            + 0.10 * (1.0 - complexity_penalty),
-            0.0,
-            1.0,
-        ))
-        rank_score = (
-            metrics["rmse"]
-            + 0.12 * metrics["featureRmse"]
-            + 0.10 * metrics["peakHeightError"]
-            + 0.08 * metrics["widthError"]
-            + 0.04 * metrics["areaError"]
-            + 0.10 * complexity_penalty
-            + max(0.0, metrics["rmse"] - GOOD_RMSE_THRESHOLD) * 0.45
-            + max(0.0, metrics["rmse"] - FAIL_RMSE_THRESHOLD) * 0.85
-            - 0.10 * float(playback_simulation.get("stabilityScore", 0.0))
-        )
-        active_terms_sorted = sorted(active_terms, key=lambda term: feature_term_names.index(term))
-        public_candidate = {
-            "rankScore": rank_score,
-            "equation": format_feature_system(feature_term_names, coefficient_matrix),
-            "activeTerms": active_terms_sorted,
-            "coefficients": flatten_feature_coefficients(feature_term_names, coefficient_matrix),
-            "coefficientStatistics": build_feature_coefficient_statistics(feature_term_names, coefficient_matrix),
-            "rmse": metrics["rmse"],
-            "peakHeightError": metrics["peakHeightError"],
-            "widthError": metrics["widthError"],
-            "areaError": metrics["areaError"],
-            "compromiseConsistency": metrics["compromiseConsistency"],
-            "stabilityScore": float(playback_simulation.get("stabilityScore", 0.0)),
-            "complexityPenalty": complexity_penalty,
-            "confidence": confidence,
-            "pseudotimeSensitivity": metrics["featureRmse"],
-            "bootstrapSupport": 1.0,
-            "metaPriorScore": meta_prior_score,
-            "modelType": "bimodal_feature_ode",
-            "notes": (
-                f"{str(playback_simulation.get('note', 'Bimodal feature ODE candidate.'))} "
-                f"RMSE quality: {metrics.get('rmseQualityLabel', rmse_quality_label(metrics['rmse']))} "
-                f"(track={metrics.get('trackRmse', metrics['rmse']):.2f} nm, image-mean={metrics.get('sequenceRmse', metrics['rmse']):.2f} nm, "
-                f"target <= {GOOD_RMSE_THRESHOLD:.0f} nm, fail > {FAIL_RMSE_THRESHOLD:.0f} nm)."
-            ),
-        }
-        equation_family.append(public_candidate)
-        internal_candidates.append(
-            {
-                "coefficientMatrix": coefficient_matrix,
-                "playbackSimulation": playback_simulation,
-                "observedSimulation": observed_simulation,
-            }
-        )
-
-    if not equation_family:
-        fallback_matrix = np.zeros((len(FEATURE_STATE_NAMES), len(feature_term_names)), dtype=float)
-        for state_index in range(len(FEATURE_STATE_NAMES)):
-            fallback_matrix[state_index] = ridge_least_squares(theta, target_matrix[:, state_index], ridge_alpha=1e-4)
-        fallback_metrics, fallback_observed = evaluate_feature_candidate(
-            feature_term_names,
-            fallback_matrix,
-            individual_profiles_list,
-            tau_values,
-            individual_metadata,
-            grid,
-            discrete_feature_series,
-            min_sigma,
-            rate_cap,
-            (tau_min, tau_max),
-        )
-        fallback_playback = simulate_bimodal_feature_system(
-            feature_term_names,
-            fallback_matrix,
-            initial_state,
-            np.linspace(tau_min, tau_max, 60),
-            grid,
-            min_sigma,
-            rate_cap,
-            tau_bounds=(tau_min, tau_max),
-        )
-        active_terms_sorted = [
-            term_name
-            for index, term_name in enumerate(feature_term_names)
-            if np.any(np.abs(fallback_matrix[:, index]) >= 1e-10)
-        ]
-        equation_family.append(
-            {
-                "rankScore": fallback_metrics["rmse"] + 0.12 * fallback_metrics["featureRmse"],
-                "equation": format_feature_system(feature_term_names, fallback_matrix),
-                "activeTerms": active_terms_sorted,
-                "coefficients": flatten_feature_coefficients(feature_term_names, fallback_matrix),
-                "coefficientStatistics": build_feature_coefficient_statistics(feature_term_names, fallback_matrix),
-                "rmse": fallback_metrics["rmse"],
-                "peakHeightError": fallback_metrics["peakHeightError"],
-                "widthError": fallback_metrics["widthError"],
-                "areaError": fallback_metrics["areaError"],
-                "compromiseConsistency": fallback_metrics["compromiseConsistency"],
-                "stabilityScore": float(fallback_playback.get("stabilityScore", 0.0)),
-                "complexityPenalty": len(active_terms_sorted) / max(1, len(feature_term_names)),
-                "confidence": float(np.clip(
-                    0.55 * float(fallback_metrics.get("rmseQualityFactor", rmse_quality_factor(fallback_metrics["rmse"])))
-                    + 0.45 * fallback_metrics["compromiseConsistency"],
-                    0.0,
-                    1.0,
-                )),
-                "pseudotimeSensitivity": fallback_metrics["featureRmse"],
-                "bootstrapSupport": 1.0,
-                "metaPriorScore": 0.0,
-                "modelType": "bimodal_feature_ode",
-                "notes": (
-                    "Ridge fallback feature ODE candidate used because thresholded sparse regression produced no stable bimodal system. "
-                    f"RMSE quality: {fallback_metrics.get('rmseQualityLabel', rmse_quality_label(fallback_metrics['rmse']))} "
-                    f"(target <= {GOOD_RMSE_THRESHOLD:.0f} nm, fail > {FAIL_RMSE_THRESHOLD:.0f} nm)."
-                ),
-            }
-        )
-        internal_candidates.append(
-            {
-                "coefficientMatrix": fallback_matrix,
-                "playbackSimulation": fallback_playback,
-                "observedSimulation": fallback_observed,
-            }
-        )
-
-    ranked_pairs = sorted(
-        zip(equation_family, internal_candidates),
+    ranked_feature_pairs = sorted(
+        feature_method_pairs,
         key=lambda item: (item[0]["rankScore"], -item[0]["confidence"]),
     )
-    unique_ranked_pairs = []
+    unique_feature_pairs = []
     seen_candidate_signatures = set()
-    for public_candidate, internal_candidate in ranked_pairs:
+    for public_candidate, internal_candidate in ranked_feature_pairs:
         signature = candidate_signature(public_candidate)
         if signature in seen_candidate_signatures:
             continue
         seen_candidate_signatures.add(signature)
-        unique_ranked_pairs.append((public_candidate, internal_candidate))
+        unique_feature_pairs.append((public_candidate, internal_candidate))
 
-    ranked_pairs = unique_ranked_pairs
-    equation_family = [public_candidate for public_candidate, _ in ranked_pairs]
-    internal_candidates = [internal_candidate for _, internal_candidate in ranked_pairs]
-    interpretable_pairs = [
+    if not unique_feature_pairs:
+        raise ValueError(
+            "No bimodal feature ODE candidates were discovered from the current ordered guided profiles."
+        )
+
+    interpretable_feature_pairs = [
         (public_candidate, internal_candidate)
-        for public_candidate, internal_candidate in zip(equation_family, internal_candidates)
+        for public_candidate, internal_candidate in unique_feature_pairs
         if is_interpretable_candidate(public_candidate)
     ]
-    if interpretable_pairs:
-        equation_family = [public_candidate for public_candidate, _ in interpretable_pairs]
-        internal_candidates = [internal_candidate for _, internal_candidate in interpretable_pairs]
+    prioritized_feature_pairs = interpretable_feature_pairs + [
+        pair for pair in unique_feature_pairs
+        if candidate_signature(pair[0]) not in {candidate_signature(item[0]) for item in interpretable_feature_pairs}
+    ]
+
+    selected_pairs: List[Tuple[dict, dict | None]] = []
+    selected_methods = set()
+    for public_candidate, internal_candidate in prioritized_feature_pairs:
+        method_key = str(public_candidate.get("discoveryMethod", "feature_ode"))
+        if method_key in selected_methods:
+            continue
+        selected_pairs.append((public_candidate, internal_candidate))
+        selected_methods.add(method_key)
+        if len(selected_pairs) >= 2:
+            break
+
+    if not selected_pairs:
+        selected_pairs.append(unique_feature_pairs[0])
+
+    top_candidate = selected_pairs[0][0]
+    top_internal = selected_pairs[0][1]
+
+    guided_profile_pde = discover_guided_profile_pde_candidate(individual_profiles_list, tau_values, individual_metadata, grid, meta_priors)
+    if guided_profile_pde is not None:
+        selected_pairs.append((guided_profile_pde, None))
+
+    for public_candidate, internal_candidate in prioritized_feature_pairs:
+        if len(selected_pairs) >= 3:
+            break
+        method_key = str(public_candidate.get("discoveryMethod", "feature_ode"))
+        if method_key in selected_methods:
+            continue
+        selected_pairs.append((public_candidate, internal_candidate))
+        selected_methods.add(method_key)
+
+    equation_family = [public_candidate for public_candidate, _ in selected_pairs[:3]]
+    internal_candidates = [internal_candidate for _, internal_candidate in selected_pairs[:3]]
     for index, candidate in enumerate(equation_family, start=1):
         candidate["rank"] = index
         candidate.pop("rankScore", None)
-
-    if not equation_family or not internal_candidates:
-        raise ValueError(
-            f"No statistically interpretable bimodal feature ODE candidates were discovered. "
-            f"Current acceptance rule requires RMSE <= {FAIL_RMSE_THRESHOLD:.0f} nm and confidence >= 0.35."
-        )
-
-    top_candidate = equation_family[0]
-    top_internal = internal_candidates[0]
-    guided_profile_pde = discover_guided_profile_pde_candidate(individual_profiles_list, tau_values, individual_metadata, grid, meta_priors)
-    if guided_profile_pde is not None and is_interpretable_candidate(guided_profile_pde):
-        guided_profile_pde["rank"] = len(equation_family) + 1
-        guided_profile_pde.pop("rankScore", None)
-        equation_family.append(guided_profile_pde)
 
     mixed_growth_model = None
     mixed_growth_note = ""

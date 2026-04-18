@@ -136,6 +136,8 @@ public sealed class EquationCandidateResult
 {
     public int Rank { get; init; }
     public string Equation { get; init; } = string.Empty;
+    public string MethodLabel { get; init; } = string.Empty;
+    public string DiscoveryMethod { get; init; } = string.Empty;
     public IReadOnlyList<string> ActiveTerms { get; init; } = Array.Empty<string>();
     public Dictionary<string, double> Coefficients { get; init; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<string, EquationCoefficientStatistics> CoefficientStatistics { get; init; } = new(StringComparer.OrdinalIgnoreCase);

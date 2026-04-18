@@ -316,6 +316,10 @@
                                             <Grid ColumnDefinitions="Auto,*,Auto,Auto,Auto" ColumnSpacing="10">
                                                 <TextBlock Text="{Binding Rank, StringFormat=Candidate {0}}" FontWeight="SemiBold" Foreground="#f0c978"/>
                                                 <StackPanel Grid.Column="1" Spacing="6">
+                                                    <TextBlock Text="{Binding MethodLabel}"
+                                                               TextWrapping="Wrap"
+                                                               FontWeight="SemiBold"
+                                                               Foreground="#d8c29a"/>
                                                     <Border Background="#120c07" BorderBrush="#4b361f" BorderThickness="1" CornerRadius="6" Padding="10">
                                                         <TextBlock Text="{Binding EquationPrimaryLine}"
                                                                    TextWrapping="Wrap"

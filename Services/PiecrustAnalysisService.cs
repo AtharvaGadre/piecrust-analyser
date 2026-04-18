@@ -226,6 +226,7 @@ public sealed class PiecrustAnalysisService
         var curvatures = new List<double>();
         var leftPeaks = new List<double>();
         var rightPeaks = new List<double>();
+        var separations = new List<double>();
         var metrics = new List<GuidedMetric>(sampled.Count);
         double roughnessAccumulator = 0;
         int roughnessCount = 0;
@@ -259,14 +260,15 @@ public sealed class PiecrustAnalysisService
                 continue;
             }
 
-            var width = ComputePeakFwhm(corrected, rawProfile.OffsetsNm, best.Index, best.Baseline);
-            var separation = peaks.Count >= 2 ? Math.Abs(peaks[0].OffsetNm - peaks[1].OffsetNm) : 0;
+            var separation = ComputePeakSeparationWidthNm(peaks);
+            var width = ComputeMorphologyWidthNm(peaks, corrected, rawProfile.OffsetsNm, best);
             if (peaks.Count >= 2)
             {
                 var ordered = peaks.OrderBy(p => p.OffsetNm).Take(2).ToArray();
                 leftPeaks.Add(ordered[0].Height);
                 rightPeaks.Add(ordered[1].Height);
             }
+            if (separation > 1e-9) separations.Add(separation);
             widths.Add(width);
             heights.Add(best.Height);
             ratios.Add(best.Height / Math.Max(1e-9, width));
@@ -283,7 +285,7 @@ public sealed class PiecrustAnalysisService
         if (widthSummary is null || heightSummary is null) return null;
 
         var meanProm = StatisticsAndGeometry.Mean(prominences);
-        var peakSeparation = EstimatePeakSeparation(file, sampled, corridorHalfWidthPx);
+        var peakSeparation = separations.Count == 0 ? 0 : StatisticsAndGeometry.Mean(separations);
         var dipDepth = EstimateDipDepth(file, sampled, corridorHalfWidthPx);
         return new GuidedSummary
         {
@@ -1124,6 +1126,24 @@ public sealed class PiecrustAnalysisService
         return x0 + (x1 - x0) * t;
     }
 
+    private static double ComputePeakSeparationWidthNm(IReadOnlyList<PeakInfo> peaks)
+    {
+        if (peaks.Count < 2) return 0;
+        var dominant = peaks
+            .OrderByDescending(peak => peak.Height)
+            .Take(2)
+            .OrderBy(peak => peak.OffsetNm)
+            .ToArray();
+        return dominant.Length == 2 ? Math.Max(0, Math.Abs(dominant[1].OffsetNm - dominant[0].OffsetNm)) : 0;
+    }
+
+    private static double ComputeMorphologyWidthNm(IReadOnlyList<PeakInfo> peaks, IReadOnlyList<double> values, IReadOnlyList<double> offsetsNm, PeakInfo? strongest)
+    {
+        var separationWidth = ComputePeakSeparationWidthNm(peaks);
+        if (separationWidth > 1e-9) return separationWidth;
+        return strongest is null ? 0 : ComputePeakFwhm(values, offsetsNm, strongest.Index, strongest.Baseline);
+    }
+
     private static double EstimatePeakSeparation(PiecrustFileState file, IReadOnlyList<(PointD Point, double ArcNm)> sampled, double halfWidthPx)
     {
         if (sampled.Count == 0) return 0;
@@ -1357,8 +1377,8 @@ public sealed class PiecrustAnalysisService
         var offsetsNm = profile.Select(point => point.X).ToArray();
         var peaks = FindPeaks(corrected, offsetsNm).OrderBy(peak => peak.OffsetNm).ToArray();
         var strongest = peaks.OrderByDescending(peak => peak.Height).FirstOrDefault();
-        var widthNm = strongest is null ? 0 : ComputePeakFwhm(corrected, offsetsNm, strongest.Index, strongest.Baseline);
-        var peakSeparationNm = peaks.Length >= 2 ? Math.Abs(peaks[^1].OffsetNm - peaks[0].OffsetNm) : 0;
+        var peakSeparationNm = ComputePeakSeparationWidthNm(peaks);
+        var widthNm = ComputeMorphologyWidthNm(peaks, corrected, offsetsNm, strongest);
         var dipDepthNm = 0.0;
         if (peaks.Length >= 2)
         {

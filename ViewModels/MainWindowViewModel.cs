@@ -859,7 +859,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase
             }
 
             ApplyEquationDiscoveryResult(result);
-            StatusText = $"Equation discovery complete. Ranked {EquationFamily.Count} bimodal feature-ODE candidate(s) using individual guided profiles.";
+            StatusText = $"Equation discovery complete. Showing {EquationFamily.Count} candidate equation(s) from distinct discovery methods.";
         }
         catch (EquationDiscoveryStageValidationException ex)
         {
@@ -1639,6 +1639,8 @@ public sealed partial class MainWindowViewModel : ViewModelBase
             {
                 Rank = 0,
                 Equation = BuildSimulationEquationText(leftAmplitude, leftSigma, rightAmplitude, rightSigma, separation),
+                MethodLabel = $"Strict Bimodal Polynomial Fit (degree {degree})",
+                DiscoveryMethod = $"simulation_polynomial_degree_{degree}",
                 ActiveTerms = new[] { "z_L(s,τ)", "z_R(s,τ)", "A_L(τ)", "σ_L(τ)", "A_R(τ)", "σ_R(τ)", "s_L(τ)", "s_R(τ)", "Δ(τ)", "s_c" },
                 Coefficients = coefficientStats.ToDictionary(entry => entry.Key, entry => entry.Value.Mean, StringComparer.OrdinalIgnoreCase),
                 CoefficientStatistics = coefficientStats,
@@ -1683,6 +1685,8 @@ public sealed partial class MainWindowViewModel : ViewModelBase
                 {
                     Rank = index + 1,
                     Equation = entry.Candidate.Display.Equation,
+                    MethodLabel = entry.Candidate.Display.MethodLabel,
+                    DiscoveryMethod = entry.Candidate.Display.DiscoveryMethod,
                     ActiveTerms = entry.Candidate.Display.ActiveTerms,
                     Coefficients = entry.Candidate.Display.Coefficients,
                     CoefficientStatistics = entry.Candidate.Display.CoefficientStatistics,
@@ -2220,6 +2224,8 @@ public sealed partial class MainWindowViewModel : ViewModelBase
     private static double ComputeProfileWidthNm(IReadOnlyList<PlotPoint> profile)
     {
         if (profile.Count < 3) return 0;
+        var peakSeparation = ComputeProfilePeakSeparationNm(profile);
+        if (peakSeparation > 1e-9) return peakSeparation;
         var peak = ComputeProfilePeakHeight(profile);
         if (!(peak > 1e-9)) return 0;
         var half = peak * 0.5;
@@ -2232,6 +2238,34 @@ public sealed partial class MainWindowViewModel : ViewModelBase
         while (left > 0 && profile[left].Y >= half) left--;
         while (right < profile.Count - 1 && profile[right].Y >= half) right++;
         return Math.Max(0, profile[right].X - profile[left].X);
+    }
+
+    private static double ComputeProfilePeakSeparationNm(IReadOnlyList<PlotPoint> profile)
+    {
+        if (profile.Count < 5) return 0;
+        var mid = profile.Count / 2;
+        var leftIndex = profile
+            .Take(Math.Max(2, mid))
+            .Select((point, index) => (point.Y, index))
+            .OrderByDescending(item => item.Y)
+            .First().index;
+        var rightIndex = mid + profile
+            .Skip(mid)
+            .Select((point, index) => (point.Y, index))
+            .OrderByDescending(item => item.Y)
+            .First().index;
+        if (rightIndex <= leftIndex + 1) return 0;
+
+        var leftPeak = profile[leftIndex].Y;
+        var rightPeak = profile[rightIndex].Y;
+        var globalPeak = Math.Max(leftPeak, rightPeak);
+        if (!(globalPeak > 1e-9)) return 0;
+
+        var valley = profile.Skip(leftIndex).Take(rightIndex - leftIndex + 1).Min(point => point.Y);
+        var valleyDepth = ((leftPeak + rightPeak) * 0.5) - valley;
+        if (valleyDepth < globalPeak * 0.05) return 0;
+
+        return Math.Max(0, Math.Abs(profile[rightIndex].X - profile[leftIndex].X));
     }
 
     private static double ComputeProfileDipDepthNm(IReadOnlyList<PlotPoint> profile)
