@@ -221,6 +221,22 @@ jobs:
         with:
           name: Pie Crust Analyser ${{ github.ref_name }}
           tag_name: ${{ github.ref_name }}
+          body: |
+            ## Downloads
+            - Windows: `pie-crust-analyser-windows-x64.zip`
+            - Linux: `pie-crust-analyser-linux-x64.zip`
+            - macOS packaging remains included as before when the macOS build completes successfully.
+
+            ## Quick Start
+            - Download the zip for your platform from the Assets section below.
+            - Extract the archive to a normal folder.
+            - Windows: run `PieCrustAnalyser.exe`
+            - Linux: make `PieCrustAnalyser` executable if needed, then run it from the extracted folder.
+
+            ## Included In This Release
+            - Self-contained desktop application bundle
+            - Python pipeline scripts bundled with the app
+            - GitHub source-code downloads remain available automatically on the release page
           generate_release_notes: true
           files: release-assets/*.zip
           fail_on_unmatched_files: true
