@@ -19,7 +19,6 @@
     <Folder Include="Models\" />
     <AvaloniaResource Include="Assets\**" />
     <None Include="Python\**\*.py" CopyToOutputDirectory="PreserveNewest" />
-    <None Include="..\stage1_surface_extraction.py" Link="Python\stage1_surface_extraction.py" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>
