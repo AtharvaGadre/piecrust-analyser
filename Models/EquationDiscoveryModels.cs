@@ -160,7 +160,7 @@ public sealed class EquationCandidateResult
         get
         {
             var lines = SplitEquationLines();
-            return lines.Length == 0 ? Equation : lines[0];
+            return lines.Length == 0 ? FormatEquationLineForDisplay(Equation) : FormatEquationLineForDisplay(lines[0]);
         }
     }
 
@@ -169,7 +169,9 @@ public sealed class EquationCandidateResult
         get
         {
             var lines = SplitEquationLines();
-            return lines.Length <= 1 ? Array.Empty<string>() : lines.Skip(1).ToArray();
+            return lines.Length <= 1
+                ? Array.Empty<string>()
+                : lines.Skip(1).Select(FormatEquationLineForDisplay).ToArray();
         }
     }
 
@@ -179,6 +181,25 @@ public sealed class EquationCandidateResult
         Equation
             .Replace("\r\n", "\n", StringComparison.Ordinal)
             .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+    private static string FormatEquationLineForDisplay(string line)
+    {
+        if (string.IsNullOrWhiteSpace(line)) return string.Empty;
+
+        return line
+            .Replace("dtau", "dτ", StringComparison.Ordinal)
+            .Replace("tau", "τ", StringComparison.Ordinal)
+            .Replace("sigma", "σ", StringComparison.Ordinal)
+            .Replace("Delta", "Δ", StringComparison.Ordinal)
+            .Replace("mu", "μ", StringComparison.Ordinal)
+            .Replace("*", " · ", StringComparison.Ordinal)
+            .Replace("^4", "⁴", StringComparison.Ordinal)
+            .Replace("^3", "³", StringComparison.Ordinal)
+            .Replace("^2", "²", StringComparison.Ordinal)
+            .Replace("^1", "", StringComparison.Ordinal)
+            .Replace("  ", " ", StringComparison.Ordinal)
+            .Trim();
+    }
 }
 
 public sealed class EquationCoefficientStatistics

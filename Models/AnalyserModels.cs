@@ -64,10 +64,13 @@ public sealed class GuidedSummary
     public double GuideLengthNm { get; init; }
     public double MeanWidthNm { get; init; }
     public double MeanHeightNm { get; init; }
+    public double RawMeanHeightNm { get; init; }
     public double WidthStdNm { get; init; }
     public double HeightStdNm { get; init; }
+    public double RawHeightStdNm { get; init; }
     public double WidthSemNm { get; init; }
     public double HeightSemNm { get; init; }
+    public double RawHeightSemNm { get; init; }
     public double RoughnessNm { get; init; }
     public double CurvatureMean { get; init; }
     public double PeakSeparationNm { get; init; }
@@ -76,6 +79,7 @@ public sealed class GuidedSummary
     public double HeightToWidthRatio { get; init; }
     public DistributionSummary? WidthSummary { get; init; }
     public DistributionSummary? HeightSummary { get; init; }
+    public DistributionSummary? RawHeightSummary { get; init; }
     public DistributionSummary? HeightWidthRatioSummary { get; init; }
 }
 
@@ -109,6 +113,7 @@ public sealed class SimulationReferenceInfo
 
 public sealed class SimulationBimodalTrajectory
 {
+    public string ConstraintMode { get; init; } = "current";
     public int Degree { get; init; }
     public double[] LeftAmplitudeCoefficients { get; init; } = Array.Empty<double>();
     public double[] LeftSigmaCoefficients { get; init; } = Array.Empty<double>();
@@ -120,6 +125,7 @@ public sealed class SimulationBimodalTrajectory
 
 public sealed class SurfaceSimulationResult
 {
+    public string ConstraintMode { get; init; } = "current";
     public int Width { get; init; }
     public int Height { get; init; }
     public double ScanSizeNmX { get; init; }

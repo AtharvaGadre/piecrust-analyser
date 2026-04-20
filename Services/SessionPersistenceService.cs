@@ -57,6 +57,8 @@ public sealed class SessionSnapshot
     public int SelectedTabIndex { get; set; }
     public double EvolutionProgress { get; set; }
     public double SimulationProgress { get; set; }
+    public string SelectedSequencingMode { get; set; } = "auto";
+    public string SelectedGrowthModelMode { get; set; } = "current";
     public string? SelectedFilePath { get; set; }
     public string? SimulationStartFilePath { get; set; }
     public string? SimulationEndFilePath { get; set; }

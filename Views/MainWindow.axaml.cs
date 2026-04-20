@@ -79,6 +79,7 @@ public partial class MainWindow : Window
     private void OnToggleSimulationClick(object? sender, RoutedEventArgs e) => Vm.ToggleSimulationPlayback();
     private void OnResetSimulationClick(object? sender, RoutedEventArgs e) => Vm.ResetSimulationPlayback();
     private async void OnDiscoverGrowthEquationsClick(object? sender, RoutedEventArgs e) => await Vm.DiscoverGrowthEquationsAsync();
+    private void OnSimulateSelectedEquationClick(object? sender, RoutedEventArgs e) => Vm.SimulateSelectedEquationCandidate();
     private void OnToggleEquationPlaybackClick(object? sender, RoutedEventArgs e) => Vm.ToggleEquationPlayback();
     private void OnResetEquationPlaybackClick(object? sender, RoutedEventArgs e) => Vm.ResetEquationPlayback();
 

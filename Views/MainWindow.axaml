@@ -99,8 +99,10 @@
                     </StackPanel>
 
                     <StackPanel Grid.Column="3" Spacing="2">
+                        <TextBlock Text="Sequencing" Foreground="#d8b07a"/>
+                        <ComboBox ItemsSource="{Binding SequencingModeOptions}" SelectedItem="{Binding SelectedSequencingMode, Mode=TwoWay}"/>
                         <TextBlock Text="Sequence #" Foreground="#d8b07a"/>
-                        <TextBox Text="{Binding SelectedFile.SequenceOrder, Mode=TwoWay}" LostFocus="OnSelectionFieldChanged"/>
+                        <TextBox Text="{Binding SelectedFile.SequenceOrder, Mode=TwoWay}" LostFocus="OnSelectionFieldChanged" IsEnabled="{Binding IsManualSequencing}"/>
                         <TextBlock Text="Format" Foreground="#d8b07a"/>
                         <TextBlock Text="{Binding SelectedFile.Format}"/>
                         <TextBlock Text="Scan Size (nm)" Foreground="#d8b07a" Margin="0,8,0,0"/>
@@ -209,7 +211,7 @@
                                 </ScrollViewer>
                             </Border>
                         </Grid>
-                        <TextBlock Text="Displayed line profiles are baseline-corrected to the local edge reference, so morphology height is shown above the local base rather than as an absolute offset." TextWrapping="Wrap" Foreground="#bca37d"/>
+                        <TextBlock Text="Displayed line profiles now show the raw sampled height from the original data so tall uncorrected peaks remain visible instead of being baseline-limited." TextWrapping="Wrap" Foreground="#bca37d"/>
                         <StackPanel Orientation="Horizontal" Spacing="10">
                             <TextBlock Text="Line Profile" FontWeight="Bold" Foreground="#d8b07a" VerticalAlignment="Center"/>
                             <Button Content="Download Line Profile CSV" Click="OnExportLineProfileCsvClick"/>
@@ -232,7 +234,7 @@
                             <TextBlock Text="Guided Box Plots" FontWeight="Bold" Foreground="#d8b07a" VerticalAlignment="Center"/>
                             <Button Content="Download Box Plot CSV" Click="OnExportBoxPlotsCsvClick"/>
                         </StackPanel>
-                        <TextBlock Text="Each box is built from line profiles sampled perpendicular to the guided centre line. The lateral span used for each perpendicular profile is the guided corridor width plus 10%, and heights are measured above the corrected local baseline rather than from absolute z offsets." TextWrapping="Wrap" Foreground="#bca37d"/>
+                        <TextBlock Text="Each box is built from line profiles sampled perpendicular to the guided centre line. Heights now use the raw peak values from those sampled profiles, while widths still use tramline peak separation." TextWrapping="Wrap" Foreground="#bca37d"/>
                         <TextBlock Text="Per-stage summary from image-level replicates" FontWeight="Bold" Foreground="#d8b07a"/>
                         <ItemsControl ItemsSource="{Binding StageSummaries}">
                             <ItemsControl.ItemTemplate>
@@ -252,18 +254,76 @@
                                 </DataTemplate>
                             </ItemsControl.ItemTemplate>
                         </ItemsControl>
-                        <TextBlock Text="Height Box Plots by Sequence (nm)" FontWeight="Bold" Foreground="#d8b07a"/>
+                        <TextBlock Text="Height Box Plots by Auto Sequence (raw nm)" FontWeight="Bold" Foreground="#d8b07a"/>
                         <Border Background="#161008" BorderBrush="#352615" BorderThickness="1" CornerRadius="8" MinWidth="980" Height="280">
-                            <controls:BoxPlotControl Datasets="{Binding HeightBoxPlots}" XAxisTitle="Sequence"/>
+                            <controls:BoxPlotControl Datasets="{Binding HeightBoxPlots}" XAxisTitle="Auto sequence by increasing raw height"/>
                         </Border>
-                        <TextBlock Text="Width Box Plots by Sequence (nm)" FontWeight="Bold" Foreground="#d8b07a"/>
+                        <TextBlock Text="Width Box Plots by Auto Sequence (nm)" FontWeight="Bold" Foreground="#d8b07a"/>
                         <Border Background="#161008" BorderBrush="#352615" BorderThickness="1" CornerRadius="8" MinWidth="980" Height="280">
-                            <controls:BoxPlotControl Datasets="{Binding WidthBoxPlots}" XAxisTitle="Sequence"/>
+                            <controls:BoxPlotControl Datasets="{Binding WidthBoxPlots}" XAxisTitle="Auto sequence by increasing raw height"/>
                         </Border>
-                        <TextBlock Text="Height/Width Ratio by Sequence" FontWeight="Bold" Foreground="#d8b07a"/>
+                        <TextBlock Text="Height/Width Ratio by Auto Sequence" FontWeight="Bold" Foreground="#d8b07a"/>
                         <Border Background="#161008" BorderBrush="#352615" BorderThickness="1" CornerRadius="8" MinWidth="980" Height="280">
-                            <controls:BoxPlotControl Datasets="{Binding HeightWidthRatioBoxPlots}" XAxisTitle="Sequence"/>
+                            <controls:BoxPlotControl Datasets="{Binding HeightWidthRatioBoxPlots}" XAxisTitle="Auto sequence by increasing raw height"/>
                         </Border>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <TabItem Header="Growth Model">
+                <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="10" Spacing="8" MinWidth="1040">
+                        <TextBlock Text="Number imported TIFF/SPM references in sequence, choose a start and end file, and the model will use all numbered references in between to fit a centered polynomial surface evolution whose displayed cross-section is constrained by a bimodal Gaussian growth fit over pseudo-time. You can now choose whether the tramline separation stays fixed, the peak widths stay fixed, only amplitudes grow, or the current fully free bimodal model is used." TextWrapping="Wrap" Foreground="#bca37d"/>
+                        <TextBlock Text="{Binding SupervisedModelStatusText}" TextWrapping="Wrap" Foreground="#d8c29a"/>
+                        <StackPanel Orientation="Horizontal" Spacing="10">
+                            <TextBlock Text="Start Reference" VerticalAlignment="Center"/>
+                            <ComboBox ItemsSource="{Binding Files}" SelectedItem="{Binding SimulationStartFile, Mode=TwoWay}" Width="220">
+                                <ComboBox.ItemTemplate>
+                                    <DataTemplate x:DataType="models:PiecrustFileState">
+                                        <StackPanel Orientation="Horizontal" Spacing="6">
+                                            <TextBlock Text="{Binding SequenceOrder, StringFormat=\#{0}}" Foreground="#f0c978"/>
+                                            <TextBlock Text="{Binding Stage}"/>
+                                        </StackPanel>
+                                    </DataTemplate>
+                                </ComboBox.ItemTemplate>
+                            </ComboBox>
+                            <TextBlock Text="End Reference" VerticalAlignment="Center"/>
+                            <ComboBox ItemsSource="{Binding Files}" SelectedItem="{Binding SimulationEndFile, Mode=TwoWay}" Width="220">
+                                <ComboBox.ItemTemplate>
+                                    <DataTemplate x:DataType="models:PiecrustFileState">
+                                        <StackPanel Orientation="Horizontal" Spacing="6">
+                                            <TextBlock Text="{Binding SequenceOrder, StringFormat=\#{0}}" Foreground="#f0c978"/>
+                                            <TextBlock Text="{Binding Stage}"/>
+                                        </StackPanel>
+                                    </DataTemplate>
+                                </ComboBox.ItemTemplate>
+                            </ComboBox>
+                            <TextBlock Text="Bimodal Mode" VerticalAlignment="Center"/>
+                            <ComboBox ItemsSource="{Binding GrowthModelModeOptions}" SelectedItem="{Binding SelectedGrowthModelMode, Mode=TwoWay}" Width="190"/>
+                            <Button Content="Run Polynomial Evolution" Click="OnRunPolynomialEvolutionClick"/>
+                            <Button Content="Play / Pause Simulation" Click="OnToggleSimulationClick"/>
+                            <Button Content="Reset Simulation" Click="OnResetSimulationClick"/>
+                            <Button Content="Download Growth Model CSV" Click="OnExportGrowthModelCsvClick"/>
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal" Spacing="10">
+                            <TextBlock Text="Simulation Progress" VerticalAlignment="Center"/>
+                            <Slider Minimum="0" Maximum="1" Value="{Binding SimulationProgress, Mode=TwoWay}" Width="260"/>
+                            <TextBlock Text="{Binding SimulationProgress, StringFormat={}{0:P0}}" VerticalAlignment="Center"/>
+                        </StackPanel>
+                        <TextBlock Text="{Binding SimulationStatusText}" TextWrapping="Wrap" Foreground="#bca37d"/>
+                        <TextBlock Text="{Binding SimulationReferenceSummaryText}" TextWrapping="Wrap" Foreground="#d8c29a"/>
+                        <TextBlock Text="{Binding SimulationSurfaceMetaText}" TextWrapping="Wrap" Foreground="#bca37d"/>
+                        <Border Background="#161008" BorderBrush="#352615" BorderThickness="1" CornerRadius="8" MinWidth="980" Height="380">
+                            <controls:LinePlotControl Series="{Binding SimulationSeries}"
+                                                      Title="Polynomial Surface Evolution Cross-section"
+                                                      XAxisLabel="{Binding SimulationXAxisLabel}"
+                                                      YAxisLabel="{Binding SimulationYAxisLabel}"
+                                                      FixedXMin="{Binding SimulationPlotFixedXMin}"
+                                                      FixedXMax="{Binding SimulationPlotFixedXMax}"
+                                                      FixedYMin="{Binding SimulationPlotFixedYMin}"
+                                                      FixedYMax="{Binding SimulationPlotFixedYMax}"/>
+                        </Border>
+                        <TextBlock Text="{Binding SimulationPlotLegendText}" Foreground="#d8c29a"/>
                     </StackPanel>
                 </ScrollViewer>
             </TabItem>
@@ -271,7 +331,7 @@
             <TabItem Header="Equation Discovery">
                 <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
                     <StackPanel Margin="10" Spacing="8" MinWidth="1040">
-                        <TextBlock Text="Discover a ranked family of time-dependent equations from guided AFM stacks. Each image contributes 10 equidistant perpendicular profiles across corridor width +20%; those 10 profiles are averaged into one representative image profile, and the solver returns both (1) bimodal Gaussian feature-evolution equations used for playback/simulation and (2) guided-profile field equations learned from the averaged line profiles." TextWrapping="Wrap" Foreground="#bca37d"/>
+                        <TextBlock Text="Equation Discovery now starts from the active Growth Model simulation. Run Polynomial Evolution first, then this tab will rank higher-order variants of the same centered bimodal Gaussian growth law and let you simulate whichever discovered candidate you want to inspect." TextWrapping="Wrap" Foreground="#bca37d"/>
                         <StackPanel Orientation="Horizontal" Spacing="10">
                             <Button Content="Discover Growth Equations" Click="OnDiscoverGrowthEquationsClick"/>
                             <Button Content="Download Equation CSV" Click="OnExportEquationDiscoveryCsvClick"/>
@@ -308,6 +368,46 @@
                             </ItemsControl.ItemTemplate>
                         </ItemsControl>
                         <TextBlock Text="Candidate Equation Family" FontWeight="Bold" Foreground="#d8b07a"/>
+                        <StackPanel Orientation="Horizontal" Spacing="10">
+                            <TextBlock Text="Active equation for simulation" VerticalAlignment="Center" Foreground="#d8c29a"/>
+                            <ComboBox ItemsSource="{Binding EquationFamily}" SelectedItem="{Binding SelectedEquationCandidate, Mode=TwoWay}" Width="520">
+                                <ComboBox.ItemTemplate>
+                                    <DataTemplate x:DataType="models:EquationCandidateResult">
+                                        <TextBlock Text="{Binding MethodLabel}" TextWrapping="Wrap"/>
+                                    </DataTemplate>
+                                </ComboBox.ItemTemplate>
+                            </ComboBox>
+                            <Button Content="Simulate Selected Equation" Click="OnSimulateSelectedEquationClick"/>
+                        </StackPanel>
+                        <Border Background="#161008" BorderBrush="#4b361f" BorderThickness="1" CornerRadius="8" Padding="12">
+                            <StackPanel Spacing="8">
+                                <TextBlock Text="Selected Growth-Model Equation Set" FontWeight="Bold" Foreground="#f0c978"/>
+                                <TextBlock Text="This is the exact bimodal Gaussian system currently driving the selected discovery candidate, playback, and diagnostics." TextWrapping="Wrap" Foreground="#d8c29a"/>
+                                <Border Background="#120c07" BorderBrush="#4b361f" BorderThickness="1" CornerRadius="6" Padding="10">
+                                    <TextBlock Text="{Binding SelectedEquationCandidate.EquationPrimaryLine}"
+                                               TextWrapping="Wrap"
+                                               FontSize="19"
+                                               FontWeight="SemiBold"
+                                               Foreground="#fff1d6"
+                                               TextAlignment="Center"
+                                               FontFamily="STIX Two Math, Cambria Math, Times New Roman"/>
+                                </Border>
+                                <ItemsControl ItemsSource="{Binding SelectedEquationCandidate.EquationSecondaryLines}">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <TextBlock Text="{Binding .}"
+                                                       TextWrapping="Wrap"
+                                                       Margin="8,0,8,0"
+                                                       FontSize="15"
+                                                       Foreground="#d8c29a"
+                                                       TextAlignment="Center"
+                                                       FontFamily="STIX Two Math, Cambria Math, Times New Roman"/>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                                <TextBlock Text="{Binding SelectedEquationCandidate.MethodLabel, StringFormat=Source: {0}}" Foreground="#c7a779"/>
+                            </StackPanel>
+                        </Border>
                         <ItemsControl ItemsSource="{Binding EquationFamily}">
                             <ItemsControl.ItemTemplate>
                                 <DataTemplate x:DataType="models:EquationCandidateResult">
@@ -323,20 +423,22 @@
                                                     <Border Background="#120c07" BorderBrush="#4b361f" BorderThickness="1" CornerRadius="6" Padding="10">
                                                         <TextBlock Text="{Binding EquationPrimaryLine}"
                                                                    TextWrapping="Wrap"
-                                                                   FontSize="15"
+                                                                   FontSize="18"
                                                                    FontWeight="SemiBold"
                                                                    Foreground="#fff1d6"
-                                                                   FontFamily="Cascadia Mono, Menlo, Monaco, Consolas, Courier New"/>
+                                                                   TextAlignment="Center"
+                                                                   FontFamily="STIX Two Math, Cambria Math, Times New Roman"/>
                                                     </Border>
                                                     <ItemsControl ItemsSource="{Binding EquationSecondaryLines}">
                                                         <ItemsControl.ItemTemplate>
                                                             <DataTemplate>
                                                                 <TextBlock Text="{Binding .}"
                                                                            TextWrapping="Wrap"
-                                                                           Margin="10,0,0,0"
-                                                                           FontSize="13"
+                                                                           Margin="10,0,10,0"
+                                                                           FontSize="15"
                                                                            Foreground="#d8c29a"
-                                                                           FontFamily="Cascadia Mono, Menlo, Monaco, Consolas, Courier New"/>
+                                                                           TextAlignment="Center"
+                                                                           FontFamily="STIX Two Math, Cambria Math, Times New Roman"/>
                                                             </DataTemplate>
                                                         </ItemsControl.ItemTemplate>
                                                     </ItemsControl>
@@ -360,7 +462,9 @@
                                                       Title="Observed Reference Profiles vs Bimodal ODE Reconstruction"
                                                       XAxisLabel="{Binding EquationDiscoveryXAxisLabel}"
                                                       YAxisLabel="{Binding EquationDiscoveryYAxisLabel}"
-                                                      LightTheme="True"/>
+                                                      LightTheme="True"
+                                                      FixedXMin="{Binding EquationDiscoveryFixedXMin}"
+                                                      FixedXMax="{Binding EquationDiscoveryFixedXMax}"/>
                         </Border>
                         <TextBlock Text="{Binding EquationDiscoveryOverlayLegendText}" Foreground="#d8c29a"/>
                         <TextBlock Text="Pseudo-time Reconstruction Progression" FontWeight="Bold" Foreground="#d8b07a"/>
@@ -369,18 +473,27 @@
                                                       Title="Bimodal Tramline Profile Evolution h(z, tau)"
                                                       XAxisLabel="{Binding EquationDiscoveryXAxisLabel}"
                                                       YAxisLabel="{Binding EquationDiscoveryYAxisLabel}"
-                                                      LightTheme="True"/>
+                                                      LightTheme="True"
+                                                      FixedXMin="{Binding EquationDiscoveryFixedXMin}"
+                                                      FixedXMax="{Binding EquationDiscoveryFixedXMax}"/>
                         </Border>
                         <TextBlock Text="{Binding EquationDiscoveryProgressionLegendText}" Foreground="#d8c29a"/>
-                        <TextBlock Text="Future Prediction" FontWeight="Bold" Foreground="#d8b07a"/>
-                        <Border Background="#161008" BorderBrush="#352615" BorderThickness="1" CornerRadius="8" MinWidth="980" Height="320">
-                            <controls:LinePlotControl Series="{Binding EquationFuturePredictionSeries}"
-                                                      Title="Forward Projection Beyond The Latest Sequence Anchor"
-                                                      XAxisLabel="{Binding EquationDiscoveryXAxisLabel}"
-                                                      YAxisLabel="{Binding EquationDiscoveryYAxisLabel}"
-                                                      LightTheme="True"/>
+                        <TextBlock Text="Fit Diagnostics" FontWeight="Bold" Foreground="#d8b07a"/>
+                        <Border Background="#161008" BorderBrush="#352615" BorderThickness="1" CornerRadius="8" Padding="10">
+                            <StackPanel Spacing="8">
+                                <TextBlock Text="{Binding EquationDiagnosticsSummaryText}" TextWrapping="Wrap" Foreground="#d8c29a"/>
+                                <Border Background="#161008" BorderBrush="#352615" BorderThickness="1" CornerRadius="8" MinWidth="980" Height="320">
+                                    <controls:LinePlotControl Series="{Binding EquationDiagnosticsSeries}"
+                                                              Title="Observed - Reconstructed Residuals"
+                                                              XAxisLabel="{Binding EquationDiscoveryXAxisLabel}"
+                                                              YAxisLabel="Residual height [nm]"
+                                                              LightTheme="True"
+                                                              FixedXMin="{Binding EquationDiscoveryFixedXMin}"
+                                                              FixedXMax="{Binding EquationDiscoveryFixedXMax}"/>
+                                </Border>
+                                <TextBlock Text="{Binding EquationDiscoveryDiagnosticsLegendText}" Foreground="#d8c29a"/>
+                            </StackPanel>
                         </Border>
-                        <TextBlock Text="{Binding EquationDiscoveryFutureLegendText}" Foreground="#d8c29a"/>
                         <TextBlock Text="Equation Playback" FontWeight="Bold" Foreground="#d8b07a"/>
                         <Border Background="#161008" BorderBrush="#352615" BorderThickness="1" CornerRadius="8" Padding="10">
                             <StackPanel Spacing="8">
@@ -431,7 +544,7 @@
             <TabItem Header="Equation Terms">
                 <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
                     <StackPanel Margin="10" Spacing="8" MinWidth="980">
-                        <TextBlock Text="This tab explains the symbols used in the Discover Equations section. It now covers both discovered equation families: the bimodal Gaussian feature-evolution system used for simulation playback and the guided-profile field equation learned from per-image averaged perpendicular line profiles." TextWrapping="Wrap" Foreground="#bca37d"/>
+                        <TextBlock Text="This tab explains the symbols used in the Growth-Model-derived equation family shown in Equation Discovery. The symbols below describe the centered bimodal Gaussian system used for playback, candidate ranking, and fit diagnostics." TextWrapping="Wrap" Foreground="#bca37d"/>
                         <Border Background="#161008" BorderBrush="#352615" BorderThickness="1" CornerRadius="8" Padding="10">
                             <StackPanel Spacing="6">
                                 <TextBlock Text="Current Equation Guide" FontWeight="Bold" Foreground="#d8b07a"/>
@@ -455,62 +568,6 @@
                                 </DataTemplate>
                             </ItemsControl.ItemTemplate>
                         </ItemsControl>
-                    </StackPanel>
-                </ScrollViewer>
-            </TabItem>
-
-            <TabItem Header="Growth Model">
-                <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
-                    <StackPanel Margin="10" Spacing="8" MinWidth="1040">
-                        <TextBlock Text="Number imported TIFF/SPM references in sequence, choose a start and end file, and the model will use all numbered references in between to fit a centered polynomial surface evolution whose displayed cross-section is constrained by a bimodal Gaussian growth fit over pseudo-time." TextWrapping="Wrap" Foreground="#bca37d"/>
-                        <TextBlock Text="{Binding SupervisedModelStatusText}" TextWrapping="Wrap" Foreground="#d8c29a"/>
-                        <StackPanel Orientation="Horizontal" Spacing="10">
-                            <TextBlock Text="Start Reference" VerticalAlignment="Center"/>
-                            <ComboBox ItemsSource="{Binding Files}" SelectedItem="{Binding SimulationStartFile, Mode=TwoWay}" Width="220">
-                                <ComboBox.ItemTemplate>
-                                    <DataTemplate x:DataType="models:PiecrustFileState">
-                                        <StackPanel Orientation="Horizontal" Spacing="6">
-                                            <TextBlock Text="{Binding SequenceOrder, StringFormat=\#{0}}" Foreground="#f0c978"/>
-                                            <TextBlock Text="{Binding Stage}"/>
-                                        </StackPanel>
-                                    </DataTemplate>
-                                </ComboBox.ItemTemplate>
-                            </ComboBox>
-                            <TextBlock Text="End Reference" VerticalAlignment="Center"/>
-                            <ComboBox ItemsSource="{Binding Files}" SelectedItem="{Binding SimulationEndFile, Mode=TwoWay}" Width="220">
-                                <ComboBox.ItemTemplate>
-                                    <DataTemplate x:DataType="models:PiecrustFileState">
-                                        <StackPanel Orientation="Horizontal" Spacing="6">
-                                            <TextBlock Text="{Binding SequenceOrder, StringFormat=\#{0}}" Foreground="#f0c978"/>
-                                            <TextBlock Text="{Binding Stage}"/>
-                                        </StackPanel>
-                                    </DataTemplate>
-                                </ComboBox.ItemTemplate>
-                            </ComboBox>
-                            <Button Content="Run Polynomial Evolution" Click="OnRunPolynomialEvolutionClick"/>
-                            <Button Content="Play / Pause Simulation" Click="OnToggleSimulationClick"/>
-                            <Button Content="Reset Simulation" Click="OnResetSimulationClick"/>
-                            <Button Content="Download Growth Model CSV" Click="OnExportGrowthModelCsvClick"/>
-                        </StackPanel>
-                        <StackPanel Orientation="Horizontal" Spacing="10">
-                            <TextBlock Text="Simulation Progress" VerticalAlignment="Center"/>
-                            <Slider Minimum="0" Maximum="1" Value="{Binding SimulationProgress, Mode=TwoWay}" Width="260"/>
-                            <TextBlock Text="{Binding SimulationProgress, StringFormat={}{0:P0}}" VerticalAlignment="Center"/>
-                        </StackPanel>
-                        <TextBlock Text="{Binding SimulationStatusText}" TextWrapping="Wrap" Foreground="#bca37d"/>
-                        <TextBlock Text="{Binding SimulationReferenceSummaryText}" TextWrapping="Wrap" Foreground="#d8c29a"/>
-                        <TextBlock Text="{Binding SimulationSurfaceMetaText}" TextWrapping="Wrap" Foreground="#bca37d"/>
-                        <Border Background="#161008" BorderBrush="#352615" BorderThickness="1" CornerRadius="8" MinWidth="980" Height="380">
-                            <controls:LinePlotControl Series="{Binding SimulationSeries}"
-                                                      Title="Polynomial Surface Evolution Cross-section"
-                                                      XAxisLabel="{Binding SimulationXAxisLabel}"
-                                                      YAxisLabel="{Binding SimulationYAxisLabel}"
-                                                      FixedXMin="{Binding SimulationPlotFixedXMin}"
-                                                      FixedXMax="{Binding SimulationPlotFixedXMax}"
-                                                      FixedYMin="{Binding SimulationPlotFixedYMin}"
-                                                      FixedYMax="{Binding SimulationPlotFixedYMax}"/>
-                        </Border>
-                        <TextBlock Text="{Binding SimulationPlotLegendText}" Foreground="#d8c29a"/>
                     </StackPanel>
                 </ScrollViewer>
             </TabItem>

@@ -9,10 +9,10 @@ public sealed class PiecrustAnalysisService
 
     public IReadOnlyList<PlotPoint> BuildLineProfile(PiecrustFileState file)
     {
-        var sourceData = file.HeightData.Length > 0
-            ? file.HeightData
-            : file.RawHeightData.Length > 0
-                ? file.RawHeightData
+        var sourceData = file.RawHeightData.Length > 0
+            ? file.RawHeightData
+            : file.HeightData.Length > 0
+                ? file.HeightData
                 : file.DisplayHeightData;
         if (file.ProfileLine.Count < 2 || sourceData.Length == 0) return Array.Empty<PlotPoint>();
         var p1 = file.ProfileLine[0];
@@ -68,9 +68,8 @@ public sealed class PiecrustAnalysisService
         var smooth1 = StatisticsAndGeometry.SavitzkyGolaySmooth(gaussianPreSmooth, firstWindow, 3);
         var smooth2 = StatisticsAndGeometry.SavitzkyGolaySmooth(smooth1, secondWindow, 3);
 
-        var corrected = ShiftToZero(BaselineCorrect(smooth2));
         var profile = new PlotPoint[steps + 1];
-        for (var i = 0; i <= steps; i++) profile[i] = new PlotPoint(distancesNm[i], corrected[i]);
+        for (var i = 0; i <= steps; i++) profile[i] = new PlotPoint(distancesNm[i], smooth2[i]);
         return profile;
     }
 
@@ -221,6 +220,7 @@ public sealed class PiecrustAnalysisService
         var corridorHalfWidthPx = GetGuideProfileHalfWidthPx(file);
         var widths = new List<double>();
         var heights = new List<double>();
+        var rawHeights = new List<double>();
         var ratios = new List<double>();
         var prominences = new List<double>();
         var curvatures = new List<double>();
@@ -271,6 +271,7 @@ public sealed class PiecrustAnalysisService
             if (separation > 1e-9) separations.Add(separation);
             widths.Add(width);
             heights.Add(best.Height);
+            rawHeights.Add(Math.Max(0, smooth[best.Index]));
             ratios.Add(best.Height / Math.Max(1e-9, width));
             prominences.Add(best.Height);
             metrics.Add(new GuidedMetric { ArcNm = sampled[i].ArcNm, WidthNm = width, HeightNm = best.Height, Valid = true });
@@ -281,6 +282,7 @@ public sealed class PiecrustAnalysisService
 
         var widthSummary = StatisticsAndGeometry.Summarise(widths);
         var heightSummary = StatisticsAndGeometry.Summarise(heights);
+        var rawHeightSummary = StatisticsAndGeometry.Summarise(rawHeights);
         var ratioSummary = StatisticsAndGeometry.Summarise(ratios);
         if (widthSummary is null || heightSummary is null) return null;
 
@@ -295,10 +297,13 @@ public sealed class PiecrustAnalysisService
             GuideLengthNm = StatisticsAndGeometry.PolylineLengthPixels(file.GuidePoints) * file.NmPerPixel,
             MeanWidthNm = widthSummary.Mean,
             MeanHeightNm = heightSummary.Mean,
+            RawMeanHeightNm = rawHeightSummary?.Mean ?? heightSummary.Mean,
             WidthStdNm = widthSummary.StandardDeviation,
             HeightStdNm = heightSummary.StandardDeviation,
+            RawHeightStdNm = rawHeightSummary?.StandardDeviation ?? heightSummary.StandardDeviation,
             WidthSemNm = widthSummary.StandardError,
             HeightSemNm = heightSummary.StandardError,
+            RawHeightSemNm = rawHeightSummary?.StandardError ?? heightSummary.StandardError,
             RoughnessNm = roughnessCount == 0 ? 0 : roughnessAccumulator / roughnessCount,
             CurvatureMean = curvatures.Count == 0 ? 0 : StatisticsAndGeometry.Mean(curvatures),
             PeakSeparationNm = peakSeparation,
@@ -307,6 +312,7 @@ public sealed class PiecrustAnalysisService
             HeightToWidthRatio = ratioSummary?.Mean ?? heightSummary.Mean / Math.Max(1e-9, widthSummary.Mean),
             WidthSummary = widthSummary,
             HeightSummary = heightSummary,
+            RawHeightSummary = rawHeightSummary,
             HeightWidthRatioSummary = ratioSummary
         };
     }
@@ -396,7 +402,7 @@ public sealed class PiecrustAnalysisService
         foreach (var file in OrderFilesForPerImageBoxPlots(files))
         {
             var summary = file.GuidedSummary;
-            var stats = summary?.HeightSummary;
+            var stats = summary?.RawHeightSummary ?? summary?.HeightSummary;
             if (stats is null || stats.Count == 0) continue;
 
             output.Add(new BoxPlotDataset
@@ -407,8 +413,8 @@ public sealed class PiecrustAnalysisService
                 SequenceOrder = file.SequenceOrder,
                 Stats = stats,
                 Color = GetStageColor(file.Stage, "#c17832"),
-                MeanMarker = summary!.MeanHeightNm,
-                MeanError = summary.HeightSemNm
+                MeanMarker = summary!.RawMeanHeightNm,
+                MeanError = summary.RawHeightSemNm
             });
         }
         return output;
@@ -477,9 +483,18 @@ public sealed class PiecrustAnalysisService
                 .ToArray();
             if (stageFiles.Length == 0) continue;
 
-            var heightMeans = stageFiles.Select(file => file.GuidedSummary!.MeanHeightNm).Where(double.IsFinite).ToArray();
+            // Stage-level height summaries should follow the same raw-height definition used by the
+            // line-profile display and the height box plots, otherwise the summary can look artificially low.
+            var heightMeans = stageFiles.Select(file => file.GuidedSummary!.RawMeanHeightNm).Where(double.IsFinite).ToArray();
             var widthMeans = stageFiles.Select(file => file.GuidedSummary!.MeanWidthNm).Where(double.IsFinite).ToArray();
-            var ratioMeans = stageFiles.Select(file => file.GuidedSummary!.HeightToWidthRatio).Where(double.IsFinite).ToArray();
+            var ratioMeans = stageFiles
+                .Select(file =>
+                {
+                    var summary = file.GuidedSummary!;
+                    return summary.RawMeanHeightNm / Math.Max(1e-9, summary.MeanWidthNm);
+                })
+                .Where(double.IsFinite)
+                .ToArray();
             rows.Add(new StageSummaryRow
             {
                 Stage = stage,
@@ -559,7 +574,7 @@ public sealed class PiecrustAnalysisService
         };
     }
 
-    public SurfaceSimulationResult? BuildSurfaceSimulation(IReadOnlyList<PiecrustFileState> files, PiecrustFileState startFile, PiecrustFileState endFile, SupervisedGrowthModel? supervisedModel = null, int frameCount = 21, int maxGridWidth = 180)
+    public SurfaceSimulationResult? BuildSurfaceSimulation(IReadOnlyList<PiecrustFileState> files, PiecrustFileState startFile, PiecrustFileState endFile, SupervisedGrowthModel? supervisedModel = null, string constraintMode = "current", int frameCount = 21, int maxGridWidth = 180)
     {
         if (files.Count == 0 || ReferenceEquals(startFile, endFile)) return null;
         var ordered = BuildOrderedSimulationReferences(files, startFile, endFile);
@@ -612,7 +627,7 @@ public sealed class PiecrustAnalysisService
         var degree = Math.Min(3, ordered.Files.Length - 1);
         if (degree < 1) return null;
         var scanSizeNmX = useGuidedAlignment ? targetWidthNm : GetScanSizeXNm(startFile);
-        var bimodalTrajectory = BuildSimulationBimodalTrajectory(surfaces, ordered.Positions, targetWidth, targetHeight, scanSizeNmX, degree, supervisedModel is { ExampleCount: >= 3 });
+        var bimodalTrajectory = BuildSimulationBimodalTrajectory(surfaces, ordered.Positions, targetWidth, targetHeight, scanSizeNmX, degree, supervisedModel is { ExampleCount: >= 3 }, constraintMode);
 
         var projector = BuildPolynomialProjector(ordered.Positions, degree);
         var pixelCount = targetWidth * targetHeight;
@@ -688,6 +703,7 @@ public sealed class PiecrustAnalysisService
 
         return new SurfaceSimulationResult
         {
+            ConstraintMode = string.IsNullOrWhiteSpace(constraintMode) ? "current" : constraintMode,
             Width = targetWidth,
             Height = targetHeight,
             ScanSizeNmX = scanSizeNmX,
@@ -967,7 +983,8 @@ public sealed class PiecrustAnalysisService
         int height,
         double scanSizeNmX,
         int degree,
-        bool usesSupervisedLearning)
+        bool usesSupervisedLearning,
+        string constraintMode)
     {
         if (referenceSurfaces.Count == 0 || referenceSurfaces.Count != positions.Count) return null;
 
@@ -983,11 +1000,24 @@ public sealed class PiecrustAnalysisService
         degree = Math.Clamp(degree, 1, Math.Max(1, samples.Count - 1));
 
         var taus = samples.Select(sample => sample.Tau).ToArray();
-        var leftAmplitude = FitPolynomialCurve(taus, samples.Select(sample => sample.Parameters[0]).ToArray(), degree);
-        var leftSigma = FitPolynomialCurve(taus, samples.Select(sample => sample.Parameters[1]).ToArray(), degree);
-        var rightAmplitude = FitPolynomialCurve(taus, samples.Select(sample => sample.Parameters[2]).ToArray(), degree);
-        var rightSigma = FitPolynomialCurve(taus, samples.Select(sample => sample.Parameters[3]).ToArray(), degree);
-        var separation = FitPolynomialCurve(taus, samples.Select(sample => sample.Parameters[4]).ToArray(), degree);
+        var normalizedConstraintMode = string.IsNullOrWhiteSpace(constraintMode) ? "current" : constraintMode;
+        var leftAmplitudeValues = samples.Select(sample => sample.Parameters[0]).ToArray();
+        var leftSigmaValues = samples.Select(sample => sample.Parameters[1]).ToArray();
+        var rightAmplitudeValues = samples.Select(sample => sample.Parameters[2]).ToArray();
+        var rightSigmaValues = samples.Select(sample => sample.Parameters[3]).ToArray();
+        var separationValues = samples.Select(sample => sample.Parameters[4]).ToArray();
+
+        var leftAmplitude = FitPolynomialCurve(taus, leftAmplitudeValues, degree);
+        var rightAmplitude = FitPolynomialCurve(taus, rightAmplitudeValues, degree);
+        var leftSigma = normalizedConstraintMode is "constant_peak_width" or "amplitude_only"
+            ? BuildConstantCurve(leftSigmaValues)
+            : FitPolynomialCurve(taus, leftSigmaValues, degree);
+        var rightSigma = normalizedConstraintMode is "constant_peak_width" or "amplitude_only"
+            ? BuildConstantCurve(rightSigmaValues)
+            : FitPolynomialCurve(taus, rightSigmaValues, degree);
+        var separation = normalizedConstraintMode is "constant_separation" or "amplitude_only"
+            ? BuildConstantCurve(separationValues)
+            : FitPolynomialCurve(taus, separationValues, degree);
         if (leftAmplitude.Length == 0 || leftSigma.Length == 0 || rightAmplitude.Length == 0 || rightSigma.Length == 0 || separation.Length == 0)
         {
             return null;
@@ -995,6 +1025,7 @@ public sealed class PiecrustAnalysisService
 
         return new SimulationBimodalTrajectory
         {
+            ConstraintMode = normalizedConstraintMode,
             Degree = degree,
             LeftAmplitudeCoefficients = leftAmplitude,
             LeftSigmaCoefficients = leftSigma,
@@ -1003,6 +1034,12 @@ public sealed class PiecrustAnalysisService
             SeparationCoefficients = separation,
             GuidanceBlendWeight = usesSupervisedLearning ? 0.28 : 0.42
         };
+    }
+
+    private static double[] BuildConstantCurve(IReadOnlyList<double> values)
+    {
+        if (values.Count == 0) return Array.Empty<double>();
+        return [StatisticsAndGeometry.Mean(values.ToArray())];
     }
 
     public double[] FitPolynomialCurve(IReadOnlyList<double> positions, IReadOnlyList<double> values, int degree)
