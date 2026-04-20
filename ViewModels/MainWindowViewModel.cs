@@ -181,6 +181,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase
     {
         public required EquationCandidateResult Display { get; init; }
         public required int Degree { get; init; }
+        public bool IsExactGrowthModel { get; init; }
         public required double[] LeftAmplitudeCoefficients { get; init; }
         public required double[] LeftSigmaCoefficients { get; init; }
         public required double[] RightAmplitudeCoefficients { get; init; }
@@ -1694,7 +1695,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase
             simulation.References
                 .OrderBy(reference => reference.Position01)
                 .Select(reference => $"{BuildSequenceAnchorLabel(reference.SequenceOrder)} = {reference.Position01:F2}"));
-        EquationDiscoveryStatusText = $"Showing {candidates.Count} growth-model-derived strict bimodal candidate(s) in {ToGrowthModelModeLabel(simulation.ConstraintMode)} mode, ranked by confidence.";
+        EquationDiscoveryStatusText = $"Showing the exact Growth Model equation plus {Math.Max(0, candidates.Count - 1)} closest higher-order polynomial approximation(s) in {ToGrowthModelModeLabel(simulation.ConstraintMode)} mode.";
         EquationDiscoveryProfileModeText =
             $"Current reduced model: Equation Discovery is sourced from Growth Model, with z(s, tau) = z_L(s, tau) + z_R(s, tau). Active mode {ToGrowthModelModeLabel(simulation.ConstraintMode)} determines which of A_L, sigma_L, A_R, sigma_R, and Delta are allowed to evolve over sequence-derived tau.";
         var validationText = result?.StageValidation is { ValidatorAvailable: true } validation
@@ -1703,12 +1704,12 @@ public sealed partial class MainWindowViewModel : ViewModelBase
         var metaPrefix = string.IsNullOrWhiteSpace(result?.MetaModelSummary) ? string.Empty : $"{result!.MetaModelSummary} ";
         EquationDiscoveryMetaText =
             metaPrefix +
-            $"Sequence order sets the pseudo-time anchors. The displayed family is constrained to the same two persistent rim peaks used by Growth Model, while polynomial coefficients control left/right height, left/right width, and tramline separation up to degree {simulation.PolynomialDegree}. Active mode: {ToGrowthModelModeLabel(simulation.ConstraintMode)}.";
+            $"Sequence order sets the pseudo-time anchors. The first candidate is the exact bimodal trajectory used by Growth Model; the remaining candidates are higher-order polynomial time-evolution fits ranked by closeness to that simulated trajectory. Active mode: {ToGrowthModelModeLabel(simulation.ConstraintMode)}.";
         EquationDiscoveryMetaText += validationText;
         EquationDiscoveryOverlayLegendText =
             "Colours follow sequence-derived pseudo-time from green to red. Solid lines = centered observed growth-model reference profiles. Dashed lines = strict bimodal reconstructions from the selected parameter-evolution equations at those same ordered anchors.";
         EquationDiscoveryProgressionLegendText =
-            "Coloured curves show the same strict bimodal evolution law used by the Growth Model simulation, expressed as ranked polynomial parameter equations over sequence-derived pseudo-time.";
+            "Coloured curves show the selected bimodal evolution law. The exact candidate should match the Growth Model solid curve; higher-order candidates show the closest polynomial alternatives to that same simulated trajectory.";
         EquationDiscoveryDiagnosticsLegendText =
             "Residual diagnostics plot observed minus reconstructed height on the same centered -90 to 90 nm axis. Curves closer to 0 nm indicate a better fit.";
         EquationDiscoveryTermGuideText =
@@ -1835,34 +1836,43 @@ public sealed partial class MainWindowViewModel : ViewModelBase
 
     private IReadOnlyList<SimulationEquationCandidate> BuildSimulationEquationCandidates(SurfaceSimulationResult simulation)
     {
+        if (simulation.BimodalTrajectory is null) return Array.Empty<SimulationEquationCandidate>();
+
         var frameRows = new List<(double Tau, double[] Parameters, IReadOnlyList<PlotPoint> Profile)>();
         for (var i = 0; i < simulation.Frames.Count; i++)
         {
-            var parameters = _analysis.ExtractCenteredBimodalSimulationParameters(
-                simulation.Frames[i],
-                simulation.Width,
-                simulation.Height,
-                simulation.ScanSizeNmX);
+            var tau = simulation.FrameProgresses[i];
+            var parameters = _analysis.EvaluateSimulationBimodalParameters(simulation.BimodalTrajectory, tau);
             if (parameters.Length < 5) return Array.Empty<SimulationEquationCandidate>();
 
-            var profile = _analysis.BuildCenteredBimodalSimulationProfile(
-                simulation.Frames[i],
-                simulation.Width,
-                simulation.Height,
-                simulation.ScanSizeNmX);
+            var profile = _analysis.BuildBimodalPolynomialSimulationProfile(simulation, tau);
             if (profile.Count < 8) return Array.Empty<SimulationEquationCandidate>();
 
-            frameRows.Add((simulation.FrameProgresses[i], parameters, profile));
+            frameRows.Add((tau, parameters, profile));
         }
 
         if (frameRows.Count < 3) return Array.Empty<SimulationEquationCandidate>();
 
-        var maxDegree = Math.Min(6, Math.Max(3, frameRows.Count - 1));
+        var exactDegree = simulation.BimodalTrajectory.Degree;
+        var maxDegree = Math.Min(8, Math.Max(exactDegree + 3, frameRows.Count - 1));
         var provisional = new List<(SimulationEquationCandidate Candidate, double Score)>();
         var taus = frameRows.Select(row => row.Tau).ToArray();
         var constraintMode = string.IsNullOrWhiteSpace(simulation.ConstraintMode) ? "current" : simulation.ConstraintMode;
+        var exactCandidate = BuildExactGrowthModelEquationCandidate(simulation, frameRows, constraintMode);
+        if (exactCandidate is not null)
+        {
+            provisional.Add((exactCandidate, double.NegativeInfinity));
+        }
 
-        for (var degree = 1; degree <= maxDegree; degree++)
+        var approximationDegrees = Enumerable.Range(exactDegree + 1, Math.Max(0, maxDegree - exactDegree)).ToArray();
+        if (approximationDegrees.Length == 0)
+        {
+            approximationDegrees = Enumerable.Range(1, maxDegree)
+                .Where(degree => degree != exactDegree)
+                .ToArray();
+        }
+
+        foreach (var degree in approximationDegrees)
         {
             var leftAmplitude = _analysis.FitPolynomialCurve(taus, frameRows.Select(row => row.Parameters[0]).ToArray(), degree);
             var rightAmplitude = _analysis.FitPolynomialCurve(taus, frameRows.Select(row => row.Parameters[2]).ToArray(), degree);
@@ -1937,8 +1947,8 @@ public sealed partial class MainWindowViewModel : ViewModelBase
             {
                 Rank = 0,
                 Equation = BuildSimulationEquationText(leftAmplitude, leftSigma, rightAmplitude, rightSigma, separation),
-                MethodLabel = $"{ToGrowthModelModeLabel(constraintMode)} Bimodal Fit (order {degree})",
-                DiscoveryMethod = $"simulation_{constraintMode}_degree_{degree}",
+                MethodLabel = $"{ToGrowthModelModeLabel(constraintMode)} Higher-Order Approximation (order {degree})",
+                DiscoveryMethod = $"simulation_{constraintMode}_higher_order_degree_{degree}",
                 ActiveTerms = BuildSimulationActiveTerms(constraintMode),
                 Coefficients = coefficientStats.ToDictionary(entry => entry.Key, entry => entry.Value.Mean, StringComparer.OrdinalIgnoreCase),
                 CoefficientStatistics = coefficientStats,
@@ -1954,7 +1964,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase
                 BootstrapSupport = 1.0,
                 MetaPriorScore = metaPrior,
                 Notes =
-                    $"Derived from the same centered bimodal Gaussian trajectory used in Growth Model. " +
+                    $"Closest-fit higher-order approximation to the exact centered bimodal Gaussian trajectory used in Growth Model. " +
                     $"Active mode {ToGrowthModelModeLabel(constraintMode)} determines how A_L, σ_L, A_R, σ_R, and Δ are allowed to evolve at pseudo-time τ, while polynomial order {degree} controls the free terms. " +
                     $"RMSE quality: {DescribeEquationRmseQuality(rmse)} (target <= {GoodEquationRmseThresholdNm:F0} nm, fail > {FailEquationRmseThresholdNm:F0} nm)."
             };
@@ -1963,6 +1973,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase
             {
                 Display = display,
                 Degree = degree,
+                IsExactGrowthModel = false,
                 LeftAmplitudeCoefficients = leftAmplitude,
                 LeftSigmaCoefficients = leftSigma,
                 RightAmplitudeCoefficients = rightAmplitude,
@@ -1972,14 +1983,15 @@ public sealed partial class MainWindowViewModel : ViewModelBase
         }
 
         return provisional
-            .Where(entry => IsStatisticallyInterpretableEquation(entry.Candidate.Display))
-            .OrderByDescending(entry => entry.Candidate.Display.Confidence)
-            .ThenByDescending(entry => entry.Candidate.Display.StabilityScore)
+            .Where(entry => entry.Candidate.IsExactGrowthModel || IsStatisticallyInterpretableEquation(entry.Candidate.Display))
+            .OrderByDescending(entry => entry.Candidate.IsExactGrowthModel)
             .ThenBy(entry => entry.Candidate.Display.Rmse)
+            .ThenByDescending(entry => entry.Candidate.Display.Confidence)
+            .ThenByDescending(entry => entry.Candidate.Display.StabilityScore)
             .ThenBy(entry => entry.Score)
             .GroupBy(entry => BuildEquationCandidateSignature(entry.Candidate.Display), StringComparer.Ordinal)
             .Select(group => group.First())
-            .Take(3)
+            .Take(4)
             .Select((entry, index) => new SimulationEquationCandidate
             {
                 Display = new EquationCandidateResult
@@ -2005,6 +2017,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase
                     Notes = entry.Candidate.Display.Notes
                 },
                 Degree = entry.Candidate.Degree,
+                IsExactGrowthModel = entry.Candidate.IsExactGrowthModel,
                 LeftAmplitudeCoefficients = entry.Candidate.LeftAmplitudeCoefficients,
                 LeftSigmaCoefficients = entry.Candidate.LeftSigmaCoefficients,
                 RightAmplitudeCoefficients = entry.Candidate.RightAmplitudeCoefficients,
@@ -2012,6 +2025,92 @@ public sealed partial class MainWindowViewModel : ViewModelBase
                 SeparationCoefficients = entry.Candidate.SeparationCoefficients
             })
             .ToArray();
+    }
+
+    private SimulationEquationCandidate? BuildExactGrowthModelEquationCandidate(
+        SurfaceSimulationResult simulation,
+        IReadOnlyList<(double Tau, double[] Parameters, IReadOnlyList<PlotPoint> Profile)> frameRows,
+        string constraintMode)
+    {
+        var trajectory = simulation.BimodalTrajectory;
+        if (trajectory is null || frameRows.Count == 0) return null;
+
+        var leftAmplitude = trajectory.LeftAmplitudeCoefficients;
+        var leftSigma = trajectory.LeftSigmaCoefficients;
+        var rightAmplitude = trajectory.RightAmplitudeCoefficients;
+        var rightSigma = trajectory.RightSigmaCoefficients;
+        var separation = trajectory.SeparationCoefficients;
+        if (leftAmplitude.Length == 0 || leftSigma.Length == 0 || rightAmplitude.Length == 0 || rightSigma.Length == 0 || separation.Length == 0)
+        {
+            return null;
+        }
+
+        double rmse = 0;
+        double peakError = 0;
+        double widthError = 0;
+        double areaError = 0;
+        double compromiseConsistency = 0;
+        foreach (var row in frameRows)
+        {
+            var predictedParameters = _analysis.EvaluateSimulationBimodalParameters(trajectory, row.Tau);
+            var predictedProfile = _analysis.BuildCenteredBimodalProfileFromParameters(predictedParameters, simulation.Width, simulation.ScanSizeNmX);
+            rmse += ComputeProfileRmse(row.Profile, predictedProfile);
+            peakError += Math.Abs(ComputeProfilePeakHeight(row.Profile) - ComputeProfilePeakHeight(predictedProfile));
+            widthError += Math.Abs(ComputeProfileWidthNm(row.Profile) - ComputeProfileWidthNm(predictedProfile));
+            areaError += Math.Abs(ComputeProfileArea(row.Profile) - ComputeProfileArea(predictedProfile));
+            var dipDelta = Math.Abs(ComputeProfileDipDepthNm(row.Profile) - ComputeProfileDipDepthNm(predictedProfile));
+            compromiseConsistency += Math.Max(0, 1.0 - dipDelta / Math.Max(1.0, ComputeProfilePeakHeight(row.Profile)));
+        }
+
+        var count = Math.Max(1, frameRows.Count);
+        rmse /= count;
+        peakError /= count;
+        widthError /= count;
+        areaError /= count;
+        compromiseConsistency /= count;
+
+        var coefficientStats = BuildSimulationCoefficientStatistics(
+            leftAmplitude,
+            leftSigma,
+            rightAmplitude,
+            rightSigma,
+            separation);
+        var display = new EquationCandidateResult
+        {
+            Rank = 0,
+            Equation = BuildSimulationEquationText(leftAmplitude, leftSigma, rightAmplitude, rightSigma, separation),
+            MethodLabel = $"Exact Growth Model Equation ({ToGrowthModelModeLabel(constraintMode)})",
+            DiscoveryMethod = "growth_model_exact",
+            ActiveTerms = BuildSimulationActiveTerms(constraintMode),
+            Coefficients = coefficientStats.ToDictionary(entry => entry.Key, entry => entry.Value.Mean, StringComparer.OrdinalIgnoreCase),
+            CoefficientStatistics = coefficientStats,
+            Rmse = rmse,
+            PeakHeightError = peakError,
+            WidthError = widthError,
+            AreaError = areaError,
+            CompromiseConsistency = compromiseConsistency,
+            StabilityScore = 1.0,
+            ComplexityPenalty = trajectory.Degree / 3.0,
+            Confidence = 1.0,
+            PseudotimeSensitivity = 0.0,
+            BootstrapSupport = 1.0,
+            MetaPriorScore = 1.0,
+            Notes =
+                "This candidate is the exact bimodal Gaussian trajectory used by the Growth Model solid curve. " +
+                "Selecting it in Equation Discovery should reproduce the same simulated profile evolution frame-for-frame; other candidates are lower-order or higher-order approximations to this trajectory."
+        };
+
+        return new SimulationEquationCandidate
+        {
+            Display = display,
+            Degree = trajectory.Degree,
+            IsExactGrowthModel = true,
+            LeftAmplitudeCoefficients = leftAmplitude,
+            LeftSigmaCoefficients = leftSigma,
+            RightAmplitudeCoefficients = rightAmplitude,
+            RightSigmaCoefficients = rightSigma,
+            SeparationCoefficients = separation
+        };
     }
 
     private static double ComputeEquationRmseQualityFactor(double rmse)

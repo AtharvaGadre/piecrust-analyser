@@ -169,7 +169,11 @@ public sealed class LinePlotControl : Control
     {
         DrawCenteredText(context, XAxisLabel, new Point(plotRect.Center.X, Bounds.Height - 30), theme.Axis, 9);
         var yText = CreateFormattedText(YAxisLabel, theme.Axis, 9, null);
-        using var rotation = context.PushTransform(Matrix.CreateTranslation(26, plotRect.Center.Y) * Matrix.CreateRotation(-Math.PI / 2));
+        var yLabelX = Math.Max(12, plotRect.X - 66);
+        var yLabelY = plotRect.Center.Y;
+        using var rotation = context.PushTransform(
+            Matrix.CreateRotation(-Math.PI / 2) *
+            Matrix.CreateTranslation(yLabelX, yLabelY));
         context.DrawText(yText, new Point(-yText.Width / 2, -yText.Height / 2));
     }
 
