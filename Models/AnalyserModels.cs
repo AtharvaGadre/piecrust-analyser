@@ -6,7 +6,7 @@ namespace PiecrustAnalyser.CSharp.Models;
 
 public readonly record struct PointD(double X, double Y);
 public readonly record struct PlotPoint(double X, double Y);
-public readonly record struct PolylineSeries(IReadOnlyList<PlotPoint> Points, string Color, double Thickness = 1.5, double Opacity = 1.0, bool Dashed = false, bool Dotted = false);
+public readonly record struct PolylineSeries(IReadOnlyList<PlotPoint> Points, string Color, double Thickness = 1.5, double Opacity = 1.0, bool Dashed = false, bool Dotted = false, bool PointsOnly = false);
 
 public sealed class DistributionSummary
 {
@@ -46,6 +46,8 @@ public sealed class StageSummaryRow
     public double WidthStdNm { get; init; }
     public double HeightWidthRatioMean { get; init; }
     public double HeightWidthRatioStd { get; init; }
+    public double MeanAngleDeg { get; init; }
+    public double MeanAreaProxyNm2 { get; init; }
 }
 
 public sealed class GuidedMetric
@@ -53,6 +55,24 @@ public sealed class GuidedMetric
     public double ArcNm { get; init; }
     public double WidthNm { get; init; }
     public double HeightNm { get; init; }
+    public double LeftEdgeAngleDeg { get; init; }
+    public double RightEdgeAngleDeg { get; init; }
+    public double MeanEdgeAngleDeg { get; init; }
+    public double MaxEdgeAngleDeg { get; init; }
+    public double AreaProxyWidthHeightNm2 { get; init; }
+    public double AreaUnderProfileNm2 { get; init; }
+    public double ArcLengthAreaProxyNm2 { get; init; }
+    public double CurvatureMean { get; init; }
+    public double CurvatureMax { get; init; }
+    public double Tau { get; init; }
+    public double PeakXNm { get; init; }
+    public double PeakHeightNm { get; init; }
+    public double BaselineNm { get; init; }
+    public string SelectedFlank { get; init; } = string.Empty;
+    public double BaseXNm { get; init; }
+    public double BaseZNm { get; init; }
+    public double PeakToBaseAngleDeg { get; init; }
+    public double AngleConfidence { get; init; }
     public bool Valid { get; init; }
 }
 
@@ -77,10 +97,22 @@ public sealed class GuidedSummary
     public double DipDepthNm { get; init; }
     public double BimodalWeight { get; init; }
     public double HeightToWidthRatio { get; init; }
+    public double MeanLeftEdgeAngleDeg { get; init; }
+    public double MeanRightEdgeAngleDeg { get; init; }
+    public double MeanEdgeAngleDeg { get; init; }
+    public double MaxEdgeAngleDeg { get; init; }
+    public double MeanAreaProxyWidthHeightNm2 { get; init; }
+    public double MeanAreaUnderProfileNm2 { get; init; }
+    public double MeanArcLengthAreaProxyNm2 { get; init; }
+    public double CurvatureMax { get; init; }
+    public double MeanPeakToBaseAngleDeg { get; init; }
+    public double MeanAngleConfidence { get; init; }
     public DistributionSummary? WidthSummary { get; init; }
     public DistributionSummary? HeightSummary { get; init; }
     public DistributionSummary? RawHeightSummary { get; init; }
     public DistributionSummary? HeightWidthRatioSummary { get; init; }
+    public DistributionSummary? MeanEdgeAngleSummary { get; init; }
+    public DistributionSummary? AreaProxySummary { get; init; }
 }
 
 public sealed class GrowthQuantificationRow
@@ -101,6 +133,62 @@ public sealed class GrowthQuantificationRow
     public double HeightSemNm { get; init; }
     public double WidthSemNm { get; init; }
     public double HeightToWidthRatio { get; init; }
+    public double MeanEdgeAngleDeg { get; init; }
+    public double AreaProxyNm2 { get; init; }
+    public double PredictedHeightAtHorizonNm { get; init; }
+    public double PredictedWidthAtHorizonNm { get; init; }
+}
+
+public sealed class GrowthModelSimulationSettings
+{
+    public bool EnableFuturePrediction { get; init; }
+    public bool EnableFigure5AngleModel { get; init; }
+    public bool EnableAngleInformedFuturePrediction { get; init; }
+    public string Figure5FlankMode { get; init; } = "both";
+    public string AngleHeightFitType { get; init; } = "polynomial2";
+    public int AngleSmoothingWindow { get; init; } = 9;
+    public bool BaselineRelativeAngles { get; init; } = true;
+    public double PredictionHorizonTau { get; init; } = 1.0;
+    public double TauTransition { get; init; } = 1.0;
+    public double K1 { get; init; } = 1.0;
+    public double K2 { get; init; } = 0.55;
+    public double Delta { get; init; } = 0.18;
+    public double Beta { get; init; } = 0.035;
+    public double PeakBaseThresholdFraction { get; init; } = 0.10;
+    public double MaxBaseDistanceNm { get; init; } = 120.0;
+    public double WAngle { get; init; } = 0.35;
+}
+
+public sealed class PeakToBaseAngleMeasurement
+{
+    public string Flank { get; init; } = "left";
+    public double PeakXNm { get; init; }
+    public double PeakZNm { get; init; }
+    public double BaselineNm { get; init; }
+    public double BaseXNm { get; init; }
+    public double BaseZNm { get; init; }
+    public double AngleRad { get; init; }
+    public double AngleDeg => AngleRad * 180.0 / Math.PI;
+    public double Confidence { get; init; }
+    public bool LowConfidence { get; init; }
+}
+
+public sealed class ProfileGeometryMetrics
+{
+    public double LeftEdgeAngleRad { get; init; }
+    public double RightEdgeAngleRad { get; init; }
+    public double MeanEdgeAngleRad { get; init; }
+    public double MaxEdgeAngleRad { get; init; }
+    public double LeftEdgeAngleDeg => LeftEdgeAngleRad * 180.0 / Math.PI;
+    public double RightEdgeAngleDeg => RightEdgeAngleRad * 180.0 / Math.PI;
+    public double MeanEdgeAngleDeg => MeanEdgeAngleRad * 180.0 / Math.PI;
+    public double MaxEdgeAngleDeg => MaxEdgeAngleRad * 180.0 / Math.PI;
+    public double AreaProxyWidthHeightNm2 { get; init; }
+    public double AreaUnderProfileNm2 { get; init; }
+    public double ArcLengthAreaProxyNm2 { get; init; }
+    public double ArcLengthNm { get; init; }
+    public double CurvatureMean { get; init; }
+    public double CurvatureMax { get; init; }
 }
 
 public sealed class SimulationReferenceInfo
@@ -143,6 +231,13 @@ public sealed class SurfaceSimulationResult
     public int SupervisedExampleCount { get; init; }
     public double SupervisedBlendWeight { get; init; }
     public SimulationBimodalTrajectory? BimodalTrajectory { get; init; }
+    public GrowthModelSimulationSettings GeometrySettings { get; init; } = new();
+    public double TauTransition { get; init; } = 1.0;
+    public double PredictionHorizonTau { get; init; }
+    public bool FuturePredictionEnabled { get; init; }
+    public double GeometryFactorMean { get; init; } = 1.0;
+    public double PredictedHeightAtHorizonNm { get; init; }
+    public double PredictedWidthAtHorizonNm { get; init; }
 }
 
 public sealed class EvolutionRecord

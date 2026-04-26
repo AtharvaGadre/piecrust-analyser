@@ -25,6 +25,10 @@ public sealed class EquationDiscoveryOptions
     public bool UseNormalizedTau { get; init; } = true;
     public int PerImagePerpendicularProfileCount { get; init; } = 10;
     public double GuideProfileWidthExpansionFraction { get; init; } = 0.20;
+    public string GrowthAnchorFitType { get; init; } = "polynomial2";
+    public int GrowthAnchorPolynomialDegree { get; init; } = 2;
+    public double FutureHorizonTau { get; init; } = 0.0;
+    public int FutureFrameCount { get; init; } = 0;
 }
 
 public sealed class EquationDiscoveryProfileInput
@@ -150,6 +154,7 @@ public sealed class EquationCandidateResult
     public double StabilityScore { get; init; }
     public double ComplexityPenalty { get; init; }
     public double Confidence { get; init; }
+    public double BiologicalTrendScore { get; init; } = 0.5;
     public double PseudotimeSensitivity { get; init; }
     public double BootstrapSupport { get; init; }
     public double MetaPriorScore { get; init; }
@@ -252,9 +257,18 @@ public sealed class EquationDiscoveryBimodalFeatureExtraction
     public IReadOnlyList<double> TauDense { get; init; } = Array.Empty<double>();
     public Dictionary<string, JsonElement> Discrete { get; init; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<string, JsonElement> Interpolated { get; init; } = new(StringComparer.OrdinalIgnoreCase);
-    public Dictionary<string, double> FitQuality { get; init; } = new(StringComparer.OrdinalIgnoreCase);
+    public EquationDiscoveryFitQuality FitQuality { get; init; } = new();
     public string CoordinateLabel { get; init; } = string.Empty;
     public string Note { get; init; } = string.Empty;
+}
+
+public sealed class EquationDiscoveryFitQuality
+{
+    public double SuccessFraction { get; init; }
+    public double RmseMean { get; init; }
+    public double RmseMax { get; init; }
+    public string AnchorFitType { get; init; } = string.Empty;
+    public int AnchorDegree { get; init; }
 }
 
 public sealed class EquationDiscoveryUnitySpherePlayback

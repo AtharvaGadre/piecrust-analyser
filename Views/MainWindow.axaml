@@ -55,7 +55,7 @@
             <StackPanel Spacing="8">
                 <WrapPanel>
                     <Button Content="Load Files / Browse" Click="OnLoadFilesClick" Margin="0,0,8,0"/>
-                    <Button Content="Auto Number Sequence" Click="OnAutoNumberFilesClick" Margin="0,0,8,0"/>
+                    <Button Content="Auto Organize Conditions + Sequence" Click="OnAutoNumberFilesClick" Margin="0,0,8,0"/>
                     <Button Content="Remove Selected Image" Click="OnRemoveSelectedClick" Margin="0,0,8,0"/>
                     <Button Content="Mark Profile Line" Click="OnMarkProfileLineClick" Margin="0,0,8,0"/>
                     <Button Content="Clear Profile Line" Click="OnClearProfileLineClick" Margin="0,0,8,0"/>
@@ -113,6 +113,7 @@
                         <StackPanel Spacing="4">
                             <TextBlock Text="Status" FontWeight="SemiBold" Foreground="#d8b07a"/>
                             <TextBlock Text="{Binding StatusText}" TextWrapping="Wrap"/>
+                            <TextBlock Text="{Binding AutomaticOrganisationSummaryText}" TextWrapping="Wrap" Foreground="#bca37d" FontSize="11" Margin="0,4,0,0"/>
                         </StackPanel>
                     </Border>
 
@@ -163,6 +164,8 @@
                                         <TextBlock Text="{Binding SelectedMeanHeightText}"/>
                                         <TextBlock Text="{Binding SelectedMeanWidthText}"/>
                                         <TextBlock Text="{Binding SelectedHeightWidthRatioText}"/>
+                                        <TextBlock Text="{Binding SelectedEdgeAngleText}"/>
+                                        <TextBlock Text="{Binding SelectedAreaProxyText}"/>
                                         <TextBlock Text="{Binding SelectedContinuityText}"/>
                                         <TextBlock Text="{Binding SelectedPeakSeparationText}"/>
                                         <Separator/>
@@ -223,6 +226,7 @@
                                                       YAxisLabel="{Binding CurrentProfileYAxisLabel}"
                                                       LightTheme="True"/>
                         </Border>
+                        <TextBlock Text="{Binding AngleConstructionText}" Foreground="#d66f45" TextWrapping="Wrap"/>
                     </StackPanel>
                 </ScrollViewer>
             </TabItem>
@@ -232,9 +236,11 @@
                     <StackPanel Margin="10" Spacing="8" MinWidth="1040">
                         <StackPanel Orientation="Horizontal" Spacing="10">
                             <TextBlock Text="Guided Box Plots" FontWeight="Bold" Foreground="#d8b07a" VerticalAlignment="Center"/>
+                            <TextBlock Text="Analysis Cohort" VerticalAlignment="Center"/>
+                            <ComboBox ItemsSource="{Binding AnalysisCohortOptions}" SelectedItem="{Binding SelectedAnalysisCohort, Mode=TwoWay}" Width="140"/>
                             <Button Content="Download Box Plot CSV" Click="OnExportBoxPlotsCsvClick"/>
                         </StackPanel>
-                        <TextBlock Text="Each box is built from line profiles sampled perpendicular to the guided centre line. Heights now use the raw peak values from those sampled profiles, while widths still use tramline peak separation." TextWrapping="Wrap" Foreground="#bca37d"/>
+                        <TextBlock Text="Each box is built from line profiles sampled perpendicular to the guided centre line. Heights now use the raw peak values from those sampled profiles, while widths still use tramline peak separation. The selected cohort controls which condition bucket is included in these plots and summaries." TextWrapping="Wrap" Foreground="#bca37d"/>
                         <TextBlock Text="Per-stage summary from image-level replicates" FontWeight="Bold" Foreground="#d8b07a"/>
                         <ItemsControl ItemsSource="{Binding StageSummaries}">
                             <ItemsControl.ItemTemplate>
@@ -270,14 +276,86 @@
                 </ScrollViewer>
             </TabItem>
 
+            <TabItem Header="Growth Angle">
+                <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="10" Spacing="10" MinWidth="1040">
+                        <TextBlock Text="Growth-angle model: the app finds the fitted/smoothed profile peak, finds the nearest near-baseline point on the selected outer flank, draws the construction triangle, and reports the outer angle θ = 180° - atan2(peak-base height, lateral distance). It only reaches 90° if the outer flank becomes close to vertical; otherwise it stays above 90° because the measured geometry itself is shallower." TextWrapping="Wrap" Foreground="#bca37d"/>
+                        <TextBlock Text="{Binding GeometryGrowthSummaryText}" TextWrapping="Wrap" Foreground="#d8c29a"/>
+                        <Grid ColumnDefinitions="1.28*,1*" ColumnSpacing="14">
+                            <Border Background="#161008" BorderBrush="#352615" BorderThickness="1" CornerRadius="8" Padding="16">
+                                <StackPanel Spacing="12">
+                                    <TextBlock Text="Extraction" FontWeight="Bold" Foreground="#d8b07a"/>
+                                    <WrapPanel ItemWidth="200" Orientation="Horizontal">
+                                        <CheckBox Content="Enable growth-angle model" IsChecked="{Binding EnableFigure5AngleModel, Mode=TwoWay}" Margin="0,0,12,8"/>
+                                        <CheckBox Content="Show dotted construction" IsChecked="{Binding ShowFigure5ConstructionLine, Mode=TwoWay}" Margin="0,0,12,8"/>
+                                        <CheckBox Content="Show scatter" IsChecked="{Binding ShowAngleHeightScatter, Mode=TwoWay}" Margin="0,0,12,8"/>
+                                        <CheckBox Content="Baseline-relative angles" IsChecked="{Binding BaselineRelativeAngle, Mode=TwoWay}" Margin="0,0,12,8"/>
+                                    </WrapPanel>
+                                    <Grid ColumnDefinitions="Auto,130,Auto,125,Auto,125,Auto,125" ColumnSpacing="10" RowDefinitions="Auto,Auto,Auto" RowSpacing="12">
+                                        <TextBlock Grid.Row="0" Grid.Column="0" Text="Flank" VerticalAlignment="Center"/>
+                                        <ComboBox Grid.Row="0" Grid.Column="1" ItemsSource="{Binding Figure5FlankOptions}" SelectedItem="{Binding SelectedFigure5FlankMode, Mode=TwoWay}" Width="125" MinHeight="36"/>
+                                        <TextBlock Grid.Row="0" Grid.Column="2" Text="Near-base threshold" VerticalAlignment="Center"/>
+                                        <ComboBox Grid.Row="0" Grid.Column="3" ItemsSource="{Binding PeakBaseThresholdOptions}" SelectedItem="{Binding SelectedPeakBaseThreshold, Mode=TwoWay}" Width="120" MinHeight="36"/>
+                                        <TextBlock Grid.Row="0" Grid.Column="4" Text="Max base distance nm" VerticalAlignment="Center"/>
+                                        <TextBox Grid.Row="0" Grid.Column="5" Text="{Binding MaxBaseDistanceNm, Mode=TwoWay}" Width="120" MinHeight="36" HorizontalContentAlignment="Center"/>
+                                        <TextBlock Grid.Row="0" Grid.Column="6" Text="Smoothing window" VerticalAlignment="Center"/>
+                                        <TextBox Grid.Row="0" Grid.Column="7" Text="{Binding AngleSmoothingWindow, Mode=TwoWay}" Width="120" MinHeight="36" HorizontalContentAlignment="Center"/>
+                                        <TextBlock Grid.Row="1" Grid.Column="0" Text="Displayed fit" VerticalAlignment="Center"/>
+                                        <ComboBox Grid.Row="1" Grid.Column="1" ItemsSource="{Binding AngleHeightFitOptions}" SelectedItem="{Binding SelectedAngleHeightFitType, Mode=TwoWay}" Width="125" MinHeight="36"/>
+                                        <TextBlock Grid.Row="1" Grid.Column="2" Grid.ColumnSpan="6" Text="The actual growth/equation anchor is fixed to quadratic (polynomial 2) for consistency. This dropdown only changes the comparison overlay in the angle plot." TextWrapping="Wrap" Foreground="#bca37d" VerticalAlignment="Center"/>
+                                        <TextBlock Grid.Row="2" Grid.Column="0" Text="Scatter profiles / image" VerticalAlignment="Center"/>
+                                        <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding AngleScatterProfilesPerImage, Mode=TwoWay}" Width="120" MinHeight="36" HorizontalContentAlignment="Center"/>
+                                        <TextBlock Grid.Row="2" Grid.Column="2" Grid.ColumnSpan="6" Text="Uses equidistant valid guided profiles per image in the angle scatter, and the same count is used the next time Equation Discovery is run. Minimum 10, maximum 100." TextWrapping="Wrap" Foreground="#bca37d" VerticalAlignment="Center"/>
+                                    </Grid>
+                                    <TextBlock Text="{Binding AngleConstructionText}" Foreground="#f0c978" TextWrapping="Wrap"/>
+                                </StackPanel>
+                            </Border>
+                            <Border Grid.Column="1" Background="#161008" BorderBrush="#352615" BorderThickness="1" CornerRadius="8" Padding="16">
+                                <StackPanel Spacing="12">
+                                    <TextBlock Text="Angle Coupling" FontWeight="Bold" Foreground="#d8b07a"/>
+                                    <WrapPanel ItemWidth="210" Orientation="Horizontal">
+                                        <Button Content="Download angle vs height CSV" Click="OnExportAngleVsHeightCsvClick" Margin="0,0,12,8"/>
+                                    </WrapPanel>
+                                    <TextBlock Text="The angle tab now supports extraction, scatter plotting, CSV export, and a quadratic angle-height comparison anchor within the observed sequence only. Future tau prediction has been removed." TextWrapping="Wrap" Foreground="#bca37d"/>
+                                </StackPanel>
+                            </Border>
+                        </Grid>
+                        <Border Background="#120c07" BorderBrush="#4b361f" BorderThickness="1" CornerRadius="6" Height="340">
+                            <controls:LinePlotControl Series="{Binding ControlAngleHeightScatterSeries}"
+                                                      Title="Control Outer Growth Angle vs Piecrust Height"
+                                                      XAxisLabel="Piecrust height [nm]"
+                                                      YAxisLabel="outer θ [deg]"
+                                                      FixedYMin="90"
+                                                      FixedYMax="180"
+                                                      LightTheme="True"/>
+                        </Border>
+                        <TextBlock Text="{Binding ControlAngleHeightScatterLegendText}" TextWrapping="Wrap" Foreground="#f0c978"/>
+                        <Border Background="#120c07" BorderBrush="#4b361f" BorderThickness="1" CornerRadius="6" Height="340">
+                            <controls:LinePlotControl Series="{Binding TreatedAngleHeightScatterSeries}"
+                                                      Title="Treated Outer Growth Angle vs Piecrust Height"
+                                                      XAxisLabel="Piecrust height [nm]"
+                                                      YAxisLabel="outer θ [deg]"
+                                                      FixedYMin="90"
+                                                      FixedYMax="180"
+                                                      LightTheme="True"/>
+                        </Border>
+                        <TextBlock Text="{Binding TreatedAngleHeightScatterLegendText}" TextWrapping="Wrap" Foreground="#f0c978"/>
+                        <TextBlock Text="Each point is one guided perpendicular profile from the relevant condition. Larger dots are per-image means, and the dashed line follows the mean trend within that same condition bucket." TextWrapping="Wrap" Foreground="#d8c29a"/>
+                        <TextBlock Text="{Binding ConditionComparisonSummaryText}" TextWrapping="Wrap" Foreground="#d8c29a"/>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
             <TabItem Header="Growth Model">
                 <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
                     <StackPanel Margin="10" Spacing="8" MinWidth="1040">
-                        <TextBlock Text="Number imported TIFF/SPM references in sequence, choose a start and end file, and the model will use all numbered references in between to fit a centered polynomial surface evolution whose displayed cross-section is constrained by a bimodal Gaussian growth fit over pseudo-time. You can now choose whether the tramline separation stays fixed, the peak widths stay fixed, only amplitudes grow, or the current fully free bimodal model is used." TextWrapping="Wrap" Foreground="#bca37d"/>
+                        <TextBlock Text="Number imported TIFF/SPM references in sequence, choose a start and end file, and the model will use all numbered references in between to fit a centered quadratic surface evolution whose displayed cross-section is constrained by a bimodal Gaussian growth fit over pseudo-time. You can now choose whether the tramline separation stays fixed, the peak widths stay fixed, only amplitudes grow, or the current fully free bimodal model is used." TextWrapping="Wrap" Foreground="#bca37d"/>
                         <TextBlock Text="{Binding SupervisedModelStatusText}" TextWrapping="Wrap" Foreground="#d8c29a"/>
                         <StackPanel Orientation="Horizontal" Spacing="10">
+                            <TextBlock Text="Analysis Cohort" VerticalAlignment="Center"/>
+                            <ComboBox ItemsSource="{Binding AnalysisCohortOptions}" SelectedItem="{Binding SelectedAnalysisCohort, Mode=TwoWay}" Width="140"/>
                             <TextBlock Text="Start Reference" VerticalAlignment="Center"/>
-                            <ComboBox ItemsSource="{Binding Files}" SelectedItem="{Binding SimulationStartFile, Mode=TwoWay}" Width="220">
+                            <ComboBox ItemsSource="{Binding AnalysisCohortFiles}" SelectedItem="{Binding SimulationStartFile, Mode=TwoWay}" Width="220">
                                 <ComboBox.ItemTemplate>
                                     <DataTemplate x:DataType="models:PiecrustFileState">
                                         <StackPanel Orientation="Horizontal" Spacing="6">
@@ -288,7 +366,7 @@
                                 </ComboBox.ItemTemplate>
                             </ComboBox>
                             <TextBlock Text="End Reference" VerticalAlignment="Center"/>
-                            <ComboBox ItemsSource="{Binding Files}" SelectedItem="{Binding SimulationEndFile, Mode=TwoWay}" Width="220">
+                            <ComboBox ItemsSource="{Binding AnalysisCohortFiles}" SelectedItem="{Binding SimulationEndFile, Mode=TwoWay}" Width="220">
                                 <ComboBox.ItemTemplate>
                                     <DataTemplate x:DataType="models:PiecrustFileState">
                                         <StackPanel Orientation="Horizontal" Spacing="6">
@@ -307,9 +385,13 @@
                         </StackPanel>
                         <StackPanel Orientation="Horizontal" Spacing="10">
                             <TextBlock Text="Simulation Progress" VerticalAlignment="Center"/>
-                            <Slider Minimum="0" Maximum="1" Value="{Binding SimulationProgress, Mode=TwoWay}" Width="260"/>
-                            <TextBlock Text="{Binding SimulationProgress, StringFormat={}{0:P0}}" VerticalAlignment="Center"/>
+                            <Slider Minimum="0" Maximum="{Binding SimulationProgressMaximum}" Value="{Binding SimulationProgress, Mode=TwoWay}" Width="260"/>
+                            <TextBlock Text="{Binding SimulationProgress, StringFormat={}t/tau {0:F2}}" VerticalAlignment="Center"/>
+                            <CheckBox Content="Enable post-tau continuation" IsChecked="{Binding EnableFuturePrediction, Mode=TwoWay}" VerticalAlignment="Center" Margin="14,0,0,0"/>
+                            <TextBlock Text="Post-tau horizon (+tau)" VerticalAlignment="Center"/>
+                            <TextBox Text="{Binding PredictionHorizonTau, Mode=TwoWay}" Width="90" MinHeight="32" HorizontalContentAlignment="Center"/>
                         </StackPanel>
+                        <TextBlock Text="Growth-angle extraction and angle-vs-height plotting are in the dedicated Growth Angle tab. If post-tau continuation is enabled here, the model extends from the last fitted bimodal frame and preserves that same two-peak morphology while continuing to grow." TextWrapping="Wrap" Foreground="#d8c29a"/>
                         <TextBlock Text="{Binding SimulationStatusText}" TextWrapping="Wrap" Foreground="#bca37d"/>
                         <TextBlock Text="{Binding SimulationReferenceSummaryText}" TextWrapping="Wrap" Foreground="#d8c29a"/>
                         <TextBlock Text="{Binding SimulationSurfaceMetaText}" TextWrapping="Wrap" Foreground="#bca37d"/>
@@ -331,8 +413,10 @@
             <TabItem Header="Equation Discovery">
                 <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
                     <StackPanel Margin="10" Spacing="8" MinWidth="1040">
-                        <TextBlock Text="Equation Discovery now starts from the active Growth Model simulation. Run Polynomial Evolution first, then this tab will rank higher-order variants of the same centered bimodal Gaussian growth law and let you simulate whichever discovered candidate you want to inspect." TextWrapping="Wrap" Foreground="#bca37d"/>
+                        <TextBlock Text="Equation Discovery now starts from the actual guided image profiles, not the Growth Model simulation. Run guided extraction on sequenced images first; the app averages the perpendicular profiles per image, fills gaps over pseudo-time inside the observed interval, and ranks image-derived bimodal equation candidates." TextWrapping="Wrap" Foreground="#bca37d"/>
                         <StackPanel Orientation="Horizontal" Spacing="10">
+                            <TextBlock Text="Analysis Cohort" VerticalAlignment="Center" Foreground="#d8c29a"/>
+                            <ComboBox ItemsSource="{Binding AnalysisCohortOptions}" SelectedItem="{Binding SelectedAnalysisCohort, Mode=TwoWay}" Width="140"/>
                             <Button Content="Discover Growth Equations" Click="OnDiscoverGrowthEquationsClick"/>
                             <Button Content="Download Equation CSV" Click="OnExportEquationDiscoveryCsvClick"/>
                             <Button Content="Download Equation JSON" Click="OnExportEquationDiscoveryJsonClick"/>
@@ -378,6 +462,7 @@
                                 </ComboBox.ItemTemplate>
                             </ComboBox>
                             <Button Content="Simulate Selected Equation" Click="OnSimulateSelectedEquationClick"/>
+                            <Button Content="Copy Equation" Click="OnCopyEquationClick"/>
                         </StackPanel>
                         <Border Background="#161008" BorderBrush="#4b361f" BorderThickness="1" CornerRadius="8" Padding="12">
                             <StackPanel Spacing="8">
@@ -406,6 +491,26 @@
                                     </ItemsControl.ItemTemplate>
                                 </ItemsControl>
                                 <TextBlock Text="{Binding SelectedEquationCandidate.MethodLabel, StringFormat=Source: {0}}" Foreground="#c7a779"/>
+                            </StackPanel>
+                        </Border>
+                        <Border Background="#161008" BorderBrush="#4b361f" BorderThickness="1" CornerRadius="8" Padding="12">
+                            <StackPanel Spacing="8">
+                                <TextBlock Text="3D Line-Profile Extension" FontWeight="Bold" Foreground="#f0c978"/>
+                                <TextBlock Text="Equation Discovery is exposed as z(x,y,t), where the current 2D line profile is extended uniformly along y. Use the playback slider below as t." TextWrapping="Wrap" Foreground="#d8c29a"/>
+                                <Border Background="#120c07" BorderBrush="#4b361f" BorderThickness="1" CornerRadius="6" Padding="10">
+                                    <TextBlock Text="{Binding SelectedEquationSurfaceOneLinerText}"
+                                               TextWrapping="Wrap"
+                                               FontSize="14"
+                                               Foreground="#f0c978"
+                                               FontFamily="Cascadia Code, Menlo, Consolas, monospace"/>
+                                </Border>
+                                <Border Background="#120c07" BorderBrush="#4b361f" BorderThickness="1" CornerRadius="6" Padding="10">
+                                    <TextBlock Text="{Binding SelectedEquationSurfaceText}"
+                                               TextWrapping="Wrap"
+                                               FontSize="15"
+                                               Foreground="#fff1d6"
+                                               FontFamily="Cascadia Code, Menlo, Consolas, monospace"/>
+                                </Border>
                             </StackPanel>
                         </Border>
                         <ItemsControl ItemsSource="{Binding EquationFamily}">
@@ -446,7 +551,7 @@
                                                                TextWrapping="Wrap"
                                                                Foreground="#c7a779"/>
                                                 </StackPanel>
-                                                <TextBlock Grid.Column="2" Text="{Binding Confidence, StringFormat=Confidence {0:P0}}"/>
+                                                <TextBlock Grid.Column="2" Text="{Binding Confidence, StringFormat=Model agreement {0:P0}}"/>
                                                 <TextBlock Grid.Column="3" Text="{Binding Rmse, StringFormat=RMSE {0:F3}}"/>
                                                 <TextBlock Grid.Column="4" Text="{Binding StabilityScore, StringFormat=Stability {0:F2}}"/>
                                             </Grid>
@@ -544,7 +649,7 @@
             <TabItem Header="Equation Terms">
                 <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
                     <StackPanel Margin="10" Spacing="8" MinWidth="980">
-                        <TextBlock Text="This tab explains the symbols used in the Growth-Model-derived equation family shown in Equation Discovery. The symbols below describe the centered bimodal Gaussian system used for playback, candidate ranking, and fit diagnostics." TextWrapping="Wrap" Foreground="#bca37d"/>
+                        <TextBlock Text="This tab explains the symbols used in the image-derived equation family shown in Equation Discovery. The symbols below describe the centered bimodal Gaussian system used for playback, candidate ranking, gap filling, and fit diagnostics." TextWrapping="Wrap" Foreground="#bca37d"/>
                         <Border Background="#161008" BorderBrush="#352615" BorderThickness="1" CornerRadius="8" Padding="10">
                             <StackPanel Spacing="6">
                                 <TextBlock Text="Current Equation Guide" FontWeight="Bold" Foreground="#d8b07a"/>
@@ -573,23 +678,26 @@
             </TabItem>
 
             <TabItem Header="Growth Quant">
-                <Grid Margin="10" RowDefinitions="Auto,*" RowSpacing="8">
+                <Grid Margin="10" RowDefinitions="Auto,Auto,*" RowSpacing="8">
                     <StackPanel Orientation="Horizontal" Spacing="10">
+                        <TextBlock Text="Analysis Cohort" VerticalAlignment="Center"/>
+                        <ComboBox ItemsSource="{Binding AnalysisCohortOptions}" SelectedItem="{Binding SelectedAnalysisCohort, Mode=TwoWay}" Width="140"/>
                         <TextBlock Text="{Binding CompromiseMethodText}" TextWrapping="Wrap" Foreground="#bca37d" MaxWidth="760"/>
                         <Button Content="Download Growth Quant CSV" Click="OnExportGrowthQuantCsvClick"/>
                     </StackPanel>
-                    <ScrollViewer Grid.Row="1">
+                    <TextBlock Grid.Row="1" Text="{Binding OverallCompromiseSummaryText}" TextWrapping="Wrap" Foreground="#f0c978"/>
+                    <ScrollViewer Grid.Row="2">
                         <ItemsControl ItemsSource="{Binding GrowthRows}">
                             <ItemsControl.ItemTemplate>
                                 <DataTemplate>
                                     <Border Background="#161008" BorderBrush="#352615" BorderThickness="1" CornerRadius="8" Padding="10" Margin="0,0,0,8">
                                         <Grid ColumnDefinitions="2*,*,*,*,*,*" ColumnSpacing="12">
                                             <TextBlock Text="{Binding FileName}" FontWeight="SemiBold"/>
-                                            <TextBlock Grid.Column="1" Text="{Binding DoseUgPerMl, StringFormat={}{0:F2} ug/mL}"/>
+                                            <TextBlock Grid.Column="1" Text="{Binding ConditionType, StringFormat=Condition {0}}"/>
                                             <TextBlock Grid.Column="2" Text="{Binding MeanHeightNm, StringFormat=Height {0:F2} nm}"/>
                                             <TextBlock Grid.Column="3" Text="{Binding MeanWidthNm, StringFormat=Width {0:F2} nm}"/>
                                             <TextBlock Grid.Column="4" Text="{Binding HeightToWidthRatio, StringFormat=H/W {0:F4}}"/>
-                                            <TextBlock Grid.Column="5" Text="{Binding CompromiseDisplayText}"/>
+                                            <TextBlock Grid.Column="5" Text="{Binding MeanEdgeAngleDeg, StringFormat=Angle {0:F1} deg}"/>
                                         </Grid>
                                     </Border>
                                 </DataTemplate>

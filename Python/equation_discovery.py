@@ -458,6 +458,16 @@ def evaluate_polynomial_curve(coefficients: Sequence[float], tau: float) -> floa
     return float(np.polyval(coeffs, float(tau)))
 
 
+def build_polynomial_anchor_series(tau_values: Sequence[float], values: Sequence[float], dense_tau: Sequence[float], degree: int) -> List[float]:
+    tau = np.asarray(tau_values, dtype=float)
+    observed = np.asarray(values, dtype=float)
+    dense = np.asarray(dense_tau, dtype=float)
+    if tau.size == 0 or observed.size == 0 or tau.size != observed.size or dense.size == 0:
+        return [0.0 for _ in dense]
+    coefficients = fit_polynomial_curve(tau, observed, degree)
+    return [float(evaluate_polynomial_curve(coefficients, value)) for value in dense]
+
+
 def estimate_peak_sigma_nm(grid: np.ndarray, profile: np.ndarray, peak_index: int) -> float:
     if len(grid) < 2 or len(profile) == 0:
         return 1.0
@@ -553,7 +563,7 @@ def weighted_profile_average(profile_matrix: np.ndarray, tau_values: np.ndarray,
     return np.sum(profile_matrix * weights[:, None], axis=0)
 
 
-def build_mixed_growth_model(individual_profiles: Sequence[np.ndarray], tau_values: np.ndarray, grid: np.ndarray) -> dict:
+def build_mixed_growth_model(individual_profiles: Sequence[np.ndarray], tau_values: np.ndarray, grid: np.ndarray, anchor_degree: int = 2) -> dict:
     observed = np.vstack([np.asarray(profile, dtype=float) for profile in individual_profiles])
     tau = np.asarray(tau_values, dtype=float)
     if observed.ndim != 2 or observed.shape[0] == 0 or len(grid) == 0:
@@ -563,7 +573,7 @@ def build_mixed_growth_model(individual_profiles: Sequence[np.ndarray], tau_valu
     bimodal_profiles = np.vstack([build_bimodal_profile_from_parameters(grid, params) for params in parameters])
     residual_profiles = observed - bimodal_profiles
 
-    degree = int(np.clip(min(3, observed.shape[0] - 1), 1, max(1, observed.shape[0] - 1)))
+    degree = int(np.clip(anchor_degree, 1, max(1, min(2, observed.shape[0] - 1))))
     parameter_coefficients = [fit_polynomial_curve(tau, parameters[:, index], degree) for index in range(parameters.shape[1])]
 
     heights = np.maximum(0.0, np.max(observed, axis=1))
@@ -593,6 +603,7 @@ def build_mixed_growth_model(individual_profiles: Sequence[np.ndarray], tau_valu
         "heightTargets": monotone_heights,
         "widthTargets": monotone_widths,
         "bandwidth": bandwidth,
+        "anchorDegree": degree,
     }
 
 
@@ -602,8 +613,10 @@ def evaluate_mixed_growth_profile(model: dict, tau: float) -> Tuple[np.ndarray, 
     if tau_max < tau_min:
         tau_min, tau_max = tau_max, tau_min
     tau_span = max(1e-6, tau_max - tau_min)
-    clamped_tau = float(np.clip(tau, tau_min, tau_max))
-    tau_progress = (clamped_tau - tau_min) / tau_span
+    tau_value = float(tau)
+    clamped_tau = float(np.clip(tau_value, tau_min, tau_max))
+    future_tau = max(0.0, tau_value - tau_max)
+    tau_progress = (tau_value - tau_min) / tau_span
     grid = np.asarray(model.get("grid", []), dtype=float)
     tau_samples = np.asarray(model.get("tau", []), dtype=float)
     parameter_coefficients = model.get("parameterCoefficients", [])
@@ -611,7 +624,7 @@ def evaluate_mixed_growth_profile(model: dict, tau: float) -> Tuple[np.ndarray, 
         return np.zeros(len(grid), dtype=float), np.zeros(len(grid), dtype=float)
 
     envelope_parameters = np.array(
-        [evaluate_polynomial_curve(coefficients, clamped_tau) for coefficients in parameter_coefficients],
+        [evaluate_polynomial_curve(coefficients, tau_value) for coefficients in parameter_coefficients],
         dtype=float,
     )
     envelope_parameters[0] = max(0.0, envelope_parameters[0])
@@ -628,8 +641,11 @@ def evaluate_mixed_growth_profile(model: dict, tau: float) -> Tuple[np.ndarray, 
     local_bimodal = weighted_profile_average(bimodal_profiles, tau_samples, clamped_tau, bandwidth)
     local_detail = local_observed - local_bimodal
 
-    transition = smoothstep((tau_progress - 0.18) / 0.72)
+    transition = smoothstep((min(1.0, max(0.0, (clamped_tau - tau_min) / tau_span)) - 0.18) / 0.72)
     detail_weight = 1.0 - 0.72 * transition
+    if future_tau > 0:
+        future_phase = 1.0 - np.exp(-2.6 * future_tau / tau_span)
+        detail_weight *= max(0.04, 1.0 - 0.88 * future_phase)
     mixed = envelope + detail_weight * local_detail
     mixed = np.clip(mixed, 0.0, None)
 
@@ -639,6 +655,12 @@ def evaluate_mixed_growth_profile(model: dict, tau: float) -> Tuple[np.ndarray, 
     target_width = float(np.interp(clamped_tau, tau_samples, width_targets)) if tau_samples.size and width_targets.size == tau_samples.size else profile_width_nm(grid, mixed)
 
     envelope_height = float(np.max(envelope)) if envelope.size else 0.0
+    envelope_width = profile_width_nm(grid, envelope)
+    if future_tau > 0:
+        future_phase = 1.0 - np.exp(-2.2 * future_tau / tau_span)
+        target_height = target_height + max(0.0, envelope_height - target_height) * future_phase
+        target_width = target_width + max(0.0, envelope_width - target_width) * future_phase
+        mixed = (1.0 - 0.62 * future_phase) * mixed + (0.62 * future_phase) * envelope
     target_height = max(target_height, envelope_height)
     current_height = float(np.max(mixed)) if mixed.size else 0.0
     if current_height > 1e-9 and target_height > 0.0:
@@ -1318,7 +1340,13 @@ def build_statistical_summary(individual_metadata: Sequence[dict]) -> dict:
     }
 
 
-def fit_bimodal_feature_trajectories(individual_profiles: Sequence[np.ndarray], tau_values: np.ndarray, grid: np.ndarray) -> dict:
+def fit_bimodal_feature_trajectories(
+    individual_profiles: Sequence[np.ndarray],
+    tau_values: np.ndarray,
+    grid: np.ndarray,
+    anchor_fit_type: str = "polynomial2",
+    anchor_degree: int = 2,
+) -> dict:
     ordered = sorted(
         zip(np.asarray(tau_values, dtype=float), [np.asarray(profile, dtype=float) for profile in individual_profiles]),
         key=lambda item: float(item[0]),
@@ -1333,9 +1361,17 @@ def fit_bimodal_feature_trajectories(individual_profiles: Sequence[np.ndarray], 
     else:
         dense_tau = np.linspace(tau_min, tau_max, dense_count)
 
+    normalized_anchor_fit = str(anchor_fit_type or "polynomial2").strip().lower()
+    use_polynomial_anchor = normalized_anchor_fit == "polynomial2"
+
     if HAS_FEATURE_EXTRACTION and extract_bimodal_features is not None and interpolate_bimodal_parameters is not None:
         discrete = extract_bimodal_features(profiles_sorted, tau_sorted.tolist(), x_positions=np.asarray(grid, dtype=float))
-        interpolated = interpolate_bimodal_parameters(tau_sorted.tolist(), discrete, dense_tau.tolist())
+        if use_polynomial_anchor:
+            interpolated = {"tau": [float(value) for value in dense_tau]}
+            for key in ("A1", "A2", "sigma1", "sigma2", "D", "mu1", "mu2", "sigma_avg", "ratio", "rmse"):
+                interpolated[key] = build_polynomial_anchor_series(tau_sorted, discrete[key], dense_tau, anchor_degree)
+        else:
+            interpolated = interpolate_bimodal_parameters(tau_sorted.tolist(), discrete, dense_tau.tolist())
     else:
         heuristic_parameters = np.vstack([estimate_bimodal_parameters(grid, profile) for profile in profiles_sorted])
         discrete = {
@@ -1355,7 +1391,10 @@ def fit_bimodal_feature_trajectories(individual_profiles: Sequence[np.ndarray], 
         }
         interpolated = {"tau": [float(value) for value in dense_tau]}
         for key in ("A1", "A2", "sigma1", "sigma2", "D", "mu1", "mu2", "sigma_avg", "ratio", "rmse"):
-            interpolated[key] = [float(value) for value in np.interp(dense_tau, tau_sorted, np.asarray(discrete[key], dtype=float))]
+            if use_polynomial_anchor:
+                interpolated[key] = build_polynomial_anchor_series(tau_sorted, discrete[key], dense_tau, anchor_degree)
+            else:
+                interpolated[key] = [float(value) for value in np.interp(dense_tau, tau_sorted, np.asarray(discrete[key], dtype=float))]
 
     for payload in (discrete, interpolated):
         for key in ("A1", "A2", "sigma1", "sigma2", "sigma_avg", "D"):
@@ -1390,6 +1429,10 @@ def fit_bimodal_feature_trajectories(individual_profiles: Sequence[np.ndarray], 
             "rmseMean": float(np.mean(fit_rmse)) if fit_rmse.size else 0.0,
             "rmseMax": float(np.max(fit_rmse)) if fit_rmse.size else 0.0,
         },
+        "anchorModel": {
+            "fitType": normalized_anchor_fit,
+            "degree": int(anchor_degree),
+        },
     }
 
 
@@ -1401,8 +1444,9 @@ def build_bimodal_feature_payload(feature_model: dict) -> dict:
         "discrete": feature_model.get("discrete", {}),
         "interpolated": feature_model.get("interpolated", {}),
         "fitQuality": feature_model.get("fitQuality", {}),
+        "anchorModel": feature_model.get("anchorModel", {}),
         "coordinateLabel": "Perpendicular offset from guide centre z [nm]",
-        "note": "Each ordered AFM line profile is fitted with a weighted 1D Gaussian-mixture model (two components), then refined into h(z) = G1(z) + G2(z) and interpolated over pseudo-time.",
+        "note": "Each ordered AFM line profile is fitted with a weighted 1D Gaussian-mixture model (two components), then refined into h(z) = G1(z) + G2(z). The dense pseudo-time anchor uses the configured polynomial fit, with quadratic anchoring used by default for consistent gap filling.",
     }
 
 
@@ -1547,11 +1591,13 @@ def build_feature_ode_candidate(
     meta_prior_score = float(np.mean([meta_priors.get(term, 0.0) for term in active_terms])) if active_terms else 0.0
     rmse_factor = float(metrics.get("rmseQualityFactor", rmse_quality_factor(metrics["rmse"])))
     feature_rmse_factor = float(rmse_quality_factor(metrics["featureRmse"]))
+    biological_trend_score = float(metrics.get("biologicalTrendScore", 0.0))
     confidence = float(np.clip(
-        0.34 * float(playback_simulation.get("stabilityScore", 0.0))
-        + 0.24 * metrics["compromiseConsistency"]
-        + 0.18 * rmse_factor
-        + 0.14 * feature_rmse_factor
+        0.30 * float(playback_simulation.get("stabilityScore", 0.0))
+        + 0.21 * metrics["compromiseConsistency"]
+        + 0.17 * rmse_factor
+        + 0.12 * feature_rmse_factor
+        + 0.10 * biological_trend_score
         + 0.10 * (1.0 - complexity_penalty),
         0.0,
         1.0,
@@ -1566,6 +1612,7 @@ def build_feature_ode_candidate(
         + max(0.0, metrics["rmse"] - GOOD_RMSE_THRESHOLD) * 0.45
         + max(0.0, metrics["rmse"] - FAIL_RMSE_THRESHOLD) * 0.85
         - 0.10 * float(playback_simulation.get("stabilityScore", 0.0))
+        + 0.22 * (1.0 - biological_trend_score)
     )
     active_terms_sorted = [
         "z(s, τ)",
@@ -1597,6 +1644,7 @@ def build_feature_ode_candidate(
         "stabilityScore": float(playback_simulation.get("stabilityScore", 0.0)),
         "complexityPenalty": complexity_penalty,
         "confidence": confidence,
+        "biologicalTrendScore": biological_trend_score,
         "pseudotimeSensitivity": metrics["featureRmse"],
         "bootstrapSupport": 1.0,
         "metaPriorScore": meta_prior_score,
@@ -1605,7 +1653,8 @@ def build_feature_ode_candidate(
             f"{notes_prefix} {str(playback_simulation.get('note', 'Bimodal feature ODE candidate.'))} "
             f"RMSE quality: {metrics.get('rmseQualityLabel', rmse_quality_label(metrics['rmse']))} "
             f"(track={metrics.get('trackRmse', metrics['rmse']):.2f} nm, image-mean={metrics.get('sequenceRmse', metrics['rmse']):.2f} nm, "
-            f"target <= {GOOD_RMSE_THRESHOLD:.0f} nm, fail > {FAIL_RMSE_THRESHOLD:.0f} nm)."
+            f"target <= {GOOD_RMSE_THRESHOLD:.0f} nm, fail > {FAIL_RMSE_THRESHOLD:.0f} nm). "
+            f"Biological trend agreement: {biological_trend_score:.0%}."
         ),
     }
     internal_candidate = {
@@ -1615,6 +1664,74 @@ def build_feature_ode_candidate(
         "discoveryMethod": discovery_method,
     }
     return public_candidate, internal_candidate
+
+
+def build_anchor_matched_feature_candidate(
+    term_names: Sequence[str],
+    anchor_tau: np.ndarray,
+    anchor_states: np.ndarray,
+    individual_profiles: Sequence[np.ndarray],
+    observed_tau: np.ndarray,
+    metadata: Sequence[dict],
+    grid: np.ndarray,
+    discrete_feature_series: dict,
+    initial_state: np.ndarray,
+    min_sigma: float,
+    rate_cap: float,
+    tau_bounds: Tuple[float, float],
+    meta_priors: Dict[str, float],
+    *,
+    anchor_degree: int,
+) -> Tuple[dict, dict] | None:
+    tau_values = np.asarray(anchor_tau, dtype=float)
+    state_matrix = np.asarray(anchor_states, dtype=float)
+    if tau_values.size < 3 or state_matrix.ndim != 2 or state_matrix.shape[0] != tau_values.size:
+        return None
+
+    tau_min = float(tau_bounds[0])
+    tau_max = float(tau_bounds[1])
+    tau_span = max(1e-9, tau_max - tau_min)
+    tau_feature = np.asarray([normalize_tau_value(value, tau_min, tau_max) for value in tau_values], dtype=float)
+    term_index = {name: index for index, name in enumerate(term_names)}
+    if "1" not in term_index or "tau" not in term_index:
+        return None
+
+    polynomial_degree = int(np.clip(anchor_degree, 1, min(2, tau_values.size - 1)))
+    coefficient_matrix = np.zeros((len(FEATURE_STATE_NAMES), len(term_names)), dtype=float)
+    for state_index in range(min(len(FEATURE_STATE_NAMES), state_matrix.shape[1])):
+        coefficients = fit_polynomial_curve(tau_feature, state_matrix[:, state_index], polynomial_degree)
+        derivative_coefficients = np.polyder(coefficients) / tau_span
+        if derivative_coefficients.size == 0:
+            continue
+        coefficient_matrix[state_index, term_index["1"]] = float(derivative_coefficients[-1])
+        if derivative_coefficients.size >= 2:
+            coefficient_matrix[state_index, term_index["tau"]] = float(derivative_coefficients[-2])
+        if derivative_coefficients.size >= 3 and "tau^2" in term_index:
+            coefficient_matrix[state_index, term_index["tau^2"]] = float(derivative_coefficients[-3])
+
+    if not np.any(np.abs(coefficient_matrix) >= 1e-10):
+        return None
+
+    return build_feature_ode_candidate(
+        term_names,
+        coefficient_matrix,
+        individual_profiles,
+        observed_tau,
+        metadata,
+        grid,
+        discrete_feature_series,
+        initial_state,
+        min_sigma,
+        rate_cap,
+        tau_bounds,
+        meta_priors,
+        discovery_method="anchor_matched_feature_ode",
+        method_label=f"Anchor-Matched Polynomial-{polynomial_degree} Feature ODE",
+        notes_prefix=(
+            "Method: equations are derived directly from the polynomial anchor used for pseudo-time gap filling, "
+            "then integrated as a compact bimodal feature ODE to minimize reconstruction RMSE."
+        ),
+    )
 
 
 def discover_best_sparse_feature_candidate(
@@ -1707,11 +1824,14 @@ def rmse_quality_label(rmse: float) -> str:
 def is_interpretable_candidate(candidate: dict) -> bool:
     rmse = float(candidate.get("rmse", float("inf")))
     confidence = float(candidate.get("confidence", 0.0))
+    biological_trend_score = float(candidate.get("biologicalTrendScore", 0.5))
     if not np.isfinite(rmse) or not np.isfinite(confidence):
         return False
     if rmse > FAIL_RMSE_THRESHOLD:
         return False
     if confidence < 0.35:
+        return False
+    if biological_trend_score < 0.35:
         return False
     return True
 
@@ -1724,6 +1844,7 @@ def compute_profile_error_metrics(predicted_profiles: Sequence[np.ndarray], obse
             "widthError": float("inf"),
             "areaError": float("inf"),
             "compromiseConsistency": 0.0,
+            "biologicalTrendScore": 0.0,
         }
 
     rmse = float(np.mean([
@@ -1746,13 +1867,64 @@ def compute_profile_error_metrics(predicted_profiles: Sequence[np.ndarray], obse
         abs(compromise_ratio_from_profile(grid, predicted) - compromise_ratio_from_profile(grid, observed))
         for predicted, observed in zip(predicted_profiles, observed_profiles)
     ]))
+    biological_trend_score = compute_biological_trend_score(predicted_profiles, observed_profiles, grid)
     return {
         "rmse": rmse,
         "peakHeightError": peak_error,
         "widthError": width_error,
         "areaError": area_error,
         "compromiseConsistency": max(0.0, 1.0 - compromise_error),
+        "biologicalTrendScore": biological_trend_score,
     }
+
+
+def compute_biological_trend_score(predicted_profiles: Sequence[np.ndarray], observed_profiles: Sequence[np.ndarray], grid: np.ndarray) -> float:
+    if len(predicted_profiles) < 2 or len(predicted_profiles) != len(observed_profiles):
+        return 0.5
+
+    predicted = [np.asarray(profile, dtype=float) for profile in predicted_profiles]
+    observed = [np.asarray(profile, dtype=float) for profile in observed_profiles]
+    pred_heights = np.array([max(0.0, float(np.max(profile))) for profile in predicted], dtype=float)
+    obs_heights = np.array([max(0.0, float(np.max(profile))) for profile in observed], dtype=float)
+    pred_widths = np.array([profile_width_nm(grid, profile) for profile in predicted], dtype=float)
+    obs_widths = np.array([profile_width_nm(grid, profile) for profile in observed], dtype=float)
+
+    def directional_agreement(pred: np.ndarray, obs: np.ndarray) -> float:
+        obs_span = max(1e-9, float(np.max(obs) - np.min(obs)))
+        pred_span = max(1e-9, float(np.max(pred) - np.min(pred)))
+        obs_delta = float(obs[-1] - obs[0])
+        pred_delta = float(pred[-1] - pred[0])
+        if abs(obs_delta) <= 0.05 * obs_span:
+            return float(np.clip(1.0 - abs(pred_delta) / max(1e-9, pred_span + obs_span), 0.0, 1.0))
+        direction_score = 1.0 if np.sign(obs_delta) == np.sign(pred_delta) else 0.0
+        magnitude_score = float(np.clip(1.0 - abs((pred_delta / pred_span) - (obs_delta / obs_span)), 0.0, 1.0))
+        tolerance = 0.12 * max(1e-9, pred_span)
+        monotonic_score = float(np.mean(np.diff(pred) >= -tolerance)) if obs_delta >= 0 else float(np.mean(np.diff(pred) <= tolerance))
+        return float(np.clip(0.45 * direction_score + 0.35 * magnitude_score + 0.20 * monotonic_score, 0.0, 1.0))
+
+    negative_floor_score = float(np.mean([
+        float(np.min(profile) >= -0.08 * max(1.0, float(np.max(profile))))
+        for profile in predicted
+    ]))
+    height_explosion_score = float(np.clip(
+        1.0 - max(0.0, float(np.max(pred_heights)) - 1.35 * max(1.0, float(np.max(obs_heights)))) / max(1.0, float(np.max(obs_heights))),
+        0.0,
+        1.0,
+    ))
+    width_explosion_score = float(np.clip(
+        1.0 - max(0.0, float(np.max(pred_widths)) - 1.45 * max(1.0, float(np.max(obs_widths)))) / max(1.0, float(np.max(obs_widths))),
+        0.0,
+        1.0,
+    ))
+    return float(np.clip(
+        0.28 * directional_agreement(pred_heights, obs_heights)
+        + 0.24 * directional_agreement(pred_widths, obs_widths)
+        + 0.18 * negative_floor_score
+        + 0.15 * height_explosion_score
+        + 0.15 * width_explosion_score,
+        0.0,
+        1.0,
+    ))
 
 
 def group_profiles_by_sequence(
@@ -2059,6 +2231,7 @@ def evaluate_feature_candidate(
             "areaError": float("inf"),
             "featureRmse": float("inf"),
             "compromiseConsistency": 0.0,
+            "biologicalTrendScore": 0.0,
             "trackRmse": float("inf"),
             "sequenceRmse": float("inf"),
             "rmseQualityFactor": 0.0,
@@ -2105,12 +2278,14 @@ def evaluate_feature_candidate(
         track_width = float(np.mean([item["widthError"] for item in track_metrics_payload]))
         track_area = float(np.mean([item["areaError"] for item in track_metrics_payload]))
         track_compromise = float(np.mean([item["compromiseConsistency"] for item in track_metrics_payload]))
+        track_biological = float(np.mean([item.get("biologicalTrendScore", 0.0) for item in track_metrics_payload]))
     else:
         track_rmse = sequence_metrics["rmse"]
         track_peak = sequence_metrics["peakHeightError"]
         track_width = sequence_metrics["widthError"]
         track_area = sequence_metrics["areaError"]
         track_compromise = sequence_metrics["compromiseConsistency"]
+        track_biological = sequence_metrics.get("biologicalTrendScore", 0.0)
 
     collapsed_features = collapse_feature_series_by_tau(discrete_features)
     state_errors = []
@@ -2125,6 +2300,7 @@ def evaluate_feature_candidate(
     width_error = float(0.65 * track_width + 0.35 * sequence_metrics["widthError"])
     area_error = float(0.65 * track_area + 0.35 * sequence_metrics["areaError"])
     compromise_consistency = float(np.clip(0.65 * track_compromise + 0.35 * sequence_metrics["compromiseConsistency"], 0.0, 1.0))
+    biological_trend_score = float(np.clip(0.65 * track_biological + 0.35 * sequence_metrics.get("biologicalTrendScore", 0.0), 0.0, 1.0))
     return {
         "rmse": rmse,
         "peakHeightError": peak_error,
@@ -2132,6 +2308,7 @@ def evaluate_feature_candidate(
         "areaError": area_error,
         "featureRmse": float(np.mean(state_errors)) if state_errors else rmse,
         "compromiseConsistency": compromise_consistency,
+        "biologicalTrendScore": biological_trend_score,
         "trackRmse": track_rmse,
         "sequenceRmse": float(sequence_metrics["rmse"]),
         "rmseQualityFactor": rmse_quality_factor(rmse),
@@ -2205,6 +2382,7 @@ def discover_guided_profile_pde_candidate(
             "widthError": float("inf"),
             "areaError": float("inf"),
             "compromiseConsistency": 0.0,
+            "biologicalTrendScore": 0.0,
         }
         if len(sequence_profiles) >= 2:
             sequence_tau = np.asarray([item["tau"] for item in sequence_profiles], dtype=float)
@@ -2224,27 +2402,31 @@ def discover_guided_profile_pde_candidate(
             track_width = float(np.mean([item["widthError"] for item in track_payload]))
             track_area = float(np.mean([item["areaError"] for item in track_payload]))
             track_compromise = float(np.mean([item["compromiseConsistency"] for item in track_payload]))
+            track_biological = float(np.mean([item.get("biologicalTrendScore", 0.0) for item in track_payload]))
         else:
             track_rmse = sequence_metrics["rmse"]
             track_peak = sequence_metrics["peakHeightError"]
             track_width = sequence_metrics["widthError"]
             track_area = sequence_metrics["areaError"]
             track_compromise = sequence_metrics["compromiseConsistency"]
+            track_biological = sequence_metrics.get("biologicalTrendScore", 0.0)
 
         rmse = float(0.65 * track_rmse + 0.35 * sequence_metrics["rmse"])
         peak_error = float(0.65 * track_peak + 0.35 * sequence_metrics["peakHeightError"])
         width_error = float(0.65 * track_width + 0.35 * sequence_metrics["widthError"])
         area_error = float(0.65 * track_area + 0.35 * sequence_metrics["areaError"])
         compromise_consistency = float(np.clip(0.65 * track_compromise + 0.35 * sequence_metrics["compromiseConsistency"], 0.0, 1.0))
+        biological_trend_score = float(np.clip(0.65 * track_biological + 0.35 * sequence_metrics.get("biologicalTrendScore", 0.0), 0.0, 1.0))
         complexity_penalty = len(active_terms) / 7.0
         meta_prior_score = float(np.mean([term_priors.get(term, 0.0) for term in active_terms])) if active_terms else 0.0
         rmse_factor = rmse_quality_factor(rmse)
         confidence = float(np.clip(
-            0.33 * stability_score +
-            0.22 * compromise_consistency +
-            0.20 * rmse_factor +
-            0.15 * (1.0 - complexity_penalty) +
-            0.10 * meta_prior_score,
+            0.29 * stability_score +
+            0.20 * compromise_consistency +
+            0.18 * rmse_factor +
+            0.13 * (1.0 - complexity_penalty) +
+            0.10 * meta_prior_score +
+            0.10 * biological_trend_score,
             0.0,
             1.0,
         ))
@@ -2257,6 +2439,7 @@ def discover_guided_profile_pde_candidate(
             + max(0.0, rmse - GOOD_RMSE_THRESHOLD) * 0.45
             + max(0.0, rmse - FAIL_RMSE_THRESHOLD) * 0.85
             - 0.08 * stability_score
+            + 0.22 * (1.0 - biological_trend_score)
         )
         coefficient_statistics = {
             term: {
@@ -2283,6 +2466,7 @@ def discover_guided_profile_pde_candidate(
             "stabilityScore": stability_score,
             "complexityPenalty": complexity_penalty,
             "confidence": confidence,
+            "biologicalTrendScore": biological_trend_score,
             "pseudotimeSensitivity": float(np.std([float(np.max(profile)) for profile in trajectories])) if trajectories else 0.0,
             "bootstrapSupport": 1.0,
             "metaPriorScore": meta_prior_score,
@@ -2290,7 +2474,8 @@ def discover_guided_profile_pde_candidate(
             "notes": (
                 f"{note}. Model type: guided_profile_pde. "
                 f"RMSE quality: {rmse_quality_label(rmse)} "
-                f"(target <= {GOOD_RMSE_THRESHOLD:.0f} nm, fail > {FAIL_RMSE_THRESHOLD:.0f} nm)."
+                f"(target <= {GOOD_RMSE_THRESHOLD:.0f} nm, fail > {FAIL_RMSE_THRESHOLD:.0f} nm). "
+                f"Biological trend agreement: {biological_trend_score:.0%}."
             ),
         }
         if best_candidate is None or candidate["rankScore"] < best_candidate["rankScore"]:
@@ -2437,8 +2622,12 @@ def build_unity_sphere_playback(grid: np.ndarray, simulation: dict) -> dict:
 def fit_equation_discovery(dataset: dict, archive_path: str) -> dict:
     profiles, requested_mapping, stage_mapping_from_profiles, features, time_info = prepare_profiles(dataset)
     stage_validation = run_stage_validation(build_validation_profiles(profiles))
-    archive = load_archive(archive_path)
+    archive = {}
     options = dataset.get("options", {})
+    anchor_fit_type = str(options.get("growthAnchorFitType", "polynomial2"))
+    anchor_degree = int(np.clip(int(options.get("growthAnchorPolynomialDegree", 2)), 1, 2))
+    future_horizon_tau = max(0.0, float(options.get("futureHorizonTau", 0.0)))
+    future_frame_count = max(0, int(options.get("futureFrameCount", 0)))
     grid = build_common_grid(
         profiles,
         int(options.get("spatialGridCount", 220)),
@@ -2452,7 +2641,7 @@ def fit_equation_discovery(dataset: dict, archive_path: str) -> dict:
     mapping_scenarios = [{"name": mapping_mode, "anchors": dict(stage_mapping_from_profiles)}]
     if requested_mapping:
         mapping_scenarios.append({"name": "requested_stage_mapping_metadata", "anchors": dict(requested_mapping)})
-    meta_priors = predict_equation_family(features, archive)
+    meta_priors: Dict[str, float] = {}
 
     stage_profiles, stage_stats, individual_profiles_list, individual_metadata = bootstrap_stage_profiles(profiles, stage_order, grid, 0)
     if len(stage_profiles) < 2 or len(individual_profiles_list) < 2:
@@ -2472,7 +2661,13 @@ def fit_equation_discovery(dataset: dict, archive_path: str) -> dict:
     for frame_index, metadata in enumerate(individual_metadata):
         metadata["frameIndex"] = frame_index
     tau_values = np.asarray([float(metadata.get("tauValue", metadata.get("tauNormalized", 0.0))) for metadata in individual_metadata], dtype=float)
-    feature_model = fit_bimodal_feature_trajectories(individual_profiles_list, tau_values, grid)
+    feature_model = fit_bimodal_feature_trajectories(
+        individual_profiles_list,
+        tau_values,
+        grid,
+        anchor_fit_type=anchor_fit_type,
+        anchor_degree=anchor_degree,
+    )
     dense_tau = np.asarray(feature_model.get("denseTau", []), dtype=float)
     dense_states = build_feature_state_matrix(feature_model.get("interpolated", {}))
     if dense_states.shape[0] < 2:
@@ -2500,6 +2695,25 @@ def fit_equation_discovery(dataset: dict, archive_path: str) -> dict:
     rate_cap = max(5.0, 4.0 * float(np.max(np.abs(target_matrix)))) if target_matrix.size else 5.0
 
     feature_method_pairs: List[Tuple[dict, dict]] = []
+    anchor_feature_pair = build_anchor_matched_feature_candidate(
+        feature_term_names,
+        dense_tau,
+        dense_states,
+        individual_profiles_list,
+        tau_values,
+        individual_metadata,
+        grid,
+        discrete_feature_series,
+        initial_state,
+        min_sigma,
+        rate_cap,
+        (tau_min, tau_max),
+        meta_priors,
+        anchor_degree=anchor_degree,
+    )
+    if anchor_feature_pair is not None:
+        feature_method_pairs.append(anchor_feature_pair)
+
     sparse_feature_pair = discover_best_sparse_feature_candidate(
         theta,
         target_matrix,
@@ -2546,30 +2760,6 @@ def fit_equation_discovery(dataset: dict, archive_path: str) -> dict:
     if ridge_feature_pair is not None:
         feature_method_pairs.append(ridge_feature_pair)
 
-    prior_guided_feature_pair = discover_best_sparse_feature_candidate(
-        theta,
-        target_matrix,
-        threshold_scales,
-        feature_term_names,
-        individual_profiles_list,
-        tau_values,
-        individual_metadata,
-        grid,
-        discrete_feature_series,
-        initial_state,
-        min_sigma,
-        rate_cap,
-        (tau_min, tau_max),
-        meta_priors,
-        discovery_method="prior_guided_stlsq_feature_ode",
-        method_label="Prior-Guided Sparse Feature ODE",
-        notes_prefix="Method: sparse STLSQ feature ODE biased by archive-derived term priors.",
-        term_priors=meta_priors,
-        threshold_multiplier=0.9,
-    )
-    if prior_guided_feature_pair is not None:
-        feature_method_pairs.append(prior_guided_feature_pair)
-
     ranked_feature_pairs = sorted(
         feature_method_pairs,
         key=lambda item: (item[0]["rankScore"], -item[0]["confidence"]),
@@ -2615,12 +2805,8 @@ def fit_equation_discovery(dataset: dict, archive_path: str) -> dict:
     top_candidate = selected_pairs[0][0]
     top_internal = selected_pairs[0][1]
 
-    guided_profile_pde = discover_guided_profile_pde_candidate(individual_profiles_list, tau_values, individual_metadata, grid, meta_priors)
-    if guided_profile_pde is not None:
-        selected_pairs.append((guided_profile_pde, None))
-
     for public_candidate, internal_candidate in prioritized_feature_pairs:
-        if len(selected_pairs) >= 3:
+        if len(selected_pairs) >= 2:
             break
         method_key = str(public_candidate.get("discoveryMethod", "feature_ode"))
         if method_key in selected_methods:
@@ -2628,8 +2814,8 @@ def fit_equation_discovery(dataset: dict, archive_path: str) -> dict:
         selected_pairs.append((public_candidate, internal_candidate))
         selected_methods.add(method_key)
 
-    equation_family = [public_candidate for public_candidate, _ in selected_pairs[:3]]
-    internal_candidates = [internal_candidate for _, internal_candidate in selected_pairs[:3]]
+    equation_family = [public_candidate for public_candidate, _ in selected_pairs[:2]]
+    internal_candidates = [internal_candidate for _, internal_candidate in selected_pairs[:2]]
     for index, candidate in enumerate(equation_family, start=1):
         candidate["rank"] = index
         candidate.pop("rankScore", None)
@@ -2637,14 +2823,14 @@ def fit_equation_discovery(dataset: dict, archive_path: str) -> dict:
     mixed_growth_model = None
     mixed_growth_note = ""
     try:
-        mixed_growth_model = build_mixed_growth_model(individual_profiles_list, tau_values, grid)
+        mixed_growth_model = build_mixed_growth_model(individual_profiles_list, tau_values, grid, anchor_degree=anchor_degree)
         top_internal["playbackSimulation"] = build_mixed_growth_simulation(
             top_internal.get("playbackSimulation", {}),
             mixed_growth_model,
             grid,
         )
         mixed_growth_note = (
-            " Playback uses a polynomial + bimodal Gaussian mixed-growth envelope "
+            f" Playback uses a degree-{anchor_degree} polynomial anchor + bimodal Gaussian mixed-growth envelope "
             "to preserve rugged line-profile details while enforcing visible peak separation growth."
         )
     except Exception as exc:
@@ -2684,6 +2870,39 @@ def fit_equation_discovery(dataset: dict, archive_path: str) -> dict:
         tau_grid=progression_tau,
     )
     progression_profiles = progression_simulation.get("profiles", [])
+    future_prediction_payload = []
+    playback_tau_max = tau_max
+    if future_horizon_tau > 1e-9 and future_frame_count > 1:
+        future_tau = np.linspace(tau_max, tau_max + future_horizon_tau, future_frame_count)
+        future_simulation_base = simulate_bimodal_feature_system(
+            feature_term_names,
+            top_coefficients,
+            initial_state,
+            future_tau,
+            grid,
+            min_sigma,
+            rate_cap,
+            tau_bounds=(tau_min, tau_max),
+        )
+        future_simulation = build_mixed_growth_simulation(
+            future_simulation_base,
+            mixed_growth_model,
+            grid,
+            tau_grid=future_tau,
+        )
+        future_profiles = future_simulation.get("profiles", [])
+        for index, tau in enumerate(future_tau[1:], start=1):
+            future_prediction_payload.append(
+                curve_payload(
+                    label=f"future tau {tau:.2f}",
+                    stage="future",
+                    kind="futurePrediction",
+                    tau=float(tau),
+                    x_values=grid,
+                    y_values=future_profiles[index],
+                )
+            )
+        playback_tau_max = float(future_tau[-1])
 
     observed_profiles = []
     reconstructed_profiles = []
@@ -2739,17 +2958,6 @@ def fit_equation_discovery(dataset: dict, archive_path: str) -> dict:
             }
         )
 
-    archive_entry = {
-        "sampleId": dataset.get("sampleId", "piecrust-session"),
-        "stageMapping": top_mapping,
-        "features": features,
-        "topTerms": top_candidate["activeTerms"],
-        "topEquation": top_candidate["equation"],
-        "rmse": top_candidate["rmse"],
-        "confidence": top_candidate["confidence"],
-    }
-    archive = update_meta_model(archive, archive_entry, archive_path)
-
     stage_averaged_profiles_payload = {
         "profiles": [
             {
@@ -2774,8 +2982,25 @@ def fit_equation_discovery(dataset: dict, archive_path: str) -> dict:
             for index, (profile, metadata) in enumerate(zip(individual_profiles_list, individual_metadata))
         ],
     }
-    simulation_playback = build_simulation_playback(grid, top_internal["playbackSimulation"])
-    unity_sphere_playback = build_unity_sphere_playback(grid, top_internal["playbackSimulation"])
+    playback_tau = np.linspace(tau_min, playback_tau_max, 84 if playback_tau_max > tau_max + 1e-9 else 60)
+    playback_simulation_base = simulate_bimodal_feature_system(
+        feature_term_names,
+        top_coefficients,
+        initial_state,
+        playback_tau,
+        grid,
+        min_sigma,
+        rate_cap,
+        tau_bounds=(tau_min, tau_max),
+    )
+    playback_simulation = build_mixed_growth_simulation(
+        playback_simulation_base,
+        mixed_growth_model,
+        grid,
+        tau_grid=playback_tau,
+    )
+    simulation_playback = build_simulation_playback(grid, playback_simulation)
+    unity_sphere_playback = build_unity_sphere_playback(grid, playback_simulation)
     discovered_feature_names = sorted({term for candidate in equation_family for term in candidate["coefficients"].keys()}, key=str.lower)
     discovered_equations_payload = {
         "equations": [candidate["equation"] for candidate in equation_family],
@@ -2821,13 +3046,14 @@ def fit_equation_discovery(dataset: dict, archive_path: str) -> dict:
         "observedProfiles": observed_profiles,
         "reconstructedProfiles": reconstructed_profiles,
         "progressionProfiles": progression_payload,
+        "futurePredictionProfiles": future_prediction_payload,
         "simulationPlayback": simulation_playback,
         "unitySpherePlayback": unity_sphere_playback,
-        "metaModelSummary": build_meta_summary(archive, meta_priors),
-        "metaModelExampleCount": len(archive.get("entries", [])),
+        "metaModelSummary": "Simplified discovery mode: no archive priors, no meta-model weighting, and no guided-profile PDE fallback. The ranked family now includes an anchor-matched polynomial feature-ODE plus sparse and ridge bimodal feature-ODE candidates.",
+        "metaModelExampleCount": 0,
         "statusText": (
             "Data-driven discovery over guided perpendicular profile averages: each ordered image contributes ten equidistant perpendicular line profiles sampled over corridor width +20%, then those ten profiles are averaged into one representative profile for equation discovery. "
-            "The pipeline discovers both a bimodal Gaussian feature ODE system for simulation playback and a guided-profile PDE-style law for the averaged line-profile field."
+            f"The pipeline uses a degree-{anchor_degree} polynomial anchor for gap filling, then discovers a compact bimodal Gaussian feature-ODE family for simulation playback, including an anchor-matched low-RMSE candidate."
             f"{mixed_growth_note}"
             f"{stage_validation_note}"
         ),
@@ -2857,12 +3083,15 @@ def summarize_notes(fits: Sequence[CandidateFit]) -> str:
 
 
 def curve_payload(label: str, stage: str, kind: str, tau: float, x_values: np.ndarray, y_values: np.ndarray) -> dict:
+    y = np.asarray(y_values, dtype=float)
+    if y.size:
+        y = y - float(np.min(y))
     return {
         "label": label,
         "stage": stage,
         "kind": kind,
         "tau": float(tau),
-        "points": [{"x": float(x), "y": float(y)} for x, y in zip(x_values, y_values)],
+        "points": [{"x": float(x), "y": float(value)} for x, value in zip(x_values, y)],
     }
 
 

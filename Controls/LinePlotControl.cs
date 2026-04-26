@@ -112,7 +112,7 @@ public sealed class LinePlotControl : Control
         context.DrawRectangle(new SolidColorBrush(Color.Parse(theme.PlotBackground)), new Pen(new SolidColorBrush(Color.Parse(theme.Border)), 1), plotRect);
         DrawCenteredText(context, Title, new Point(plotRect.Center.X, 14), theme.Title, 10, FontWeight.SemiBold);
 
-        var series = Series?.Where(s => s.Points.Count > 1).ToArray() ?? Array.Empty<PolylineSeries>();
+        var series = Series?.Where(s => s.Points.Count > 1 || (s.PointsOnly && s.Points.Count > 0)).ToArray() ?? Array.Empty<PolylineSeries>();
         if (series.Length == 0)
         {
             DrawAxisLabels(context, plotRect, theme);
@@ -154,6 +154,16 @@ public sealed class LinePlotControl : Control
             }
 
             var brush = new SolidColorBrush(Color.Parse(line.Color), line.Opacity);
+            if (line.PointsOnly)
+            {
+                foreach (var point in points)
+                {
+                    var radius = Math.Max(2.4, line.Thickness * 1.6);
+                    context.DrawEllipse(brush, new Pen(new SolidColorBrush(Colors.White, Math.Min(0.65, line.Opacity)), 0.7), point, radius, radius);
+                }
+                continue;
+            }
+
             var pen = line.Dotted
                 ? new Pen(brush, line.Thickness, dashStyle: new DashStyle(new[] { 1.2d, 4.2d }, 0))
                 : line.Dashed

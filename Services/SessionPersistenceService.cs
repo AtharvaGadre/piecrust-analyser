@@ -59,6 +59,20 @@ public sealed class SessionSnapshot
     public double SimulationProgress { get; set; }
     public string SelectedSequencingMode { get; set; } = "auto";
     public string SelectedGrowthModelMode { get; set; } = "current";
+    public bool EnableFigure5AngleModel { get; set; }
+    public bool EnableFuturePrediction { get; set; }
+    public bool EnableAngleInformedFuturePrediction { get; set; }
+    public string SelectedFigure5FlankMode { get; set; } = "both";
+    public double SelectedPeakBaseThreshold { get; set; } = 0.10;
+    public double MaxBaseDistanceNm { get; set; } = 120;
+    public double WAngle { get; set; } = 0.35;
+    public string SelectedAngleHeightFitType { get; set; } = "polynomial2";
+    public double AngleSmoothingWindow { get; set; } = 9;
+    public bool BaselineRelativeAngle { get; set; } = true;
+    public double PredictionHorizonTau { get; set; } = 1.0;
+    public double PhaseTransitionDelta { get; set; } = 0.18;
+    public double LateStageGrowthRateK2 { get; set; } = 0.55;
+    public double SmoothingBeta { get; set; } = 0.035;
     public string? SelectedFilePath { get; set; }
     public string? SimulationStartFilePath { get; set; }
     public string? SimulationEndFilePath { get; set; }

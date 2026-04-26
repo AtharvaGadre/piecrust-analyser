@@ -1,6 +1,7 @@
 using Avalonia.Controls;
 using Avalonia.Interactivity;
 using Avalonia.Input;
+using Avalonia.Input.Platform;
 using Avalonia.Platform.Storage;
 using PiecrustAnalyser.CSharp.Controls;
 using PiecrustAnalyser.CSharp.Services;
@@ -80,6 +81,25 @@ public partial class MainWindow : Window
     private void OnResetSimulationClick(object? sender, RoutedEventArgs e) => Vm.ResetSimulationPlayback();
     private async void OnDiscoverGrowthEquationsClick(object? sender, RoutedEventArgs e) => await Vm.DiscoverGrowthEquationsAsync();
     private void OnSimulateSelectedEquationClick(object? sender, RoutedEventArgs e) => Vm.SimulateSelectedEquationCandidate();
+    private async void OnCopyEquationClick(object? sender, RoutedEventArgs e)
+    {
+        var text = Vm.BuildSelectedEquationClipboardText();
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            Vm.ReportRecoverableError("Copy Equation", "There is no selected equation to copy yet.");
+            return;
+        }
+
+        var top = TopLevel.GetTopLevel(this);
+        if (top?.Clipboard is null)
+        {
+            Vm.ReportRecoverableError("Copy Equation", "Clipboard access is not available right now.");
+            return;
+        }
+
+        await top.Clipboard.SetTextAsync(text);
+        Vm.StatusText = "Selected equation copied to clipboard for external plotting.";
+    }
     private void OnToggleEquationPlaybackClick(object? sender, RoutedEventArgs e) => Vm.ToggleEquationPlayback();
     private void OnResetEquationPlaybackClick(object? sender, RoutedEventArgs e) => Vm.ResetEquationPlayback();
 
@@ -101,6 +121,9 @@ public partial class MainWindow : Window
 
     private async void OnExportGrowthQuantCsvClick(object? sender, RoutedEventArgs e) =>
         await SaveCsvAsync(Vm.BuildGrowthQuantificationCsv(), "Save growth quantification CSV", "piecrust-growth-quant.csv");
+
+    private async void OnExportAngleVsHeightCsvClick(object? sender, RoutedEventArgs e) =>
+        await SaveCsvAsync(Vm.BuildAngleVsHeightCsv(), "Save angle vs height CSV", "piecrust-angle-vs-height.csv");
 
     private async void OnExportEquationDiscoveryCsvClick(object? sender, RoutedEventArgs e) =>
         await SaveCsvAsync(Vm.BuildEquationDiscoveryCsv(), "Save equation discovery CSV", "piecrust-equation-discovery.csv");

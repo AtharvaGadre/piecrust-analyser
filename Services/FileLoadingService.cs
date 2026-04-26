@@ -36,6 +36,9 @@ public sealed class FileLoadingService
 
     private static async Task<LoadedHeightMap?> ParseBitmapAsync(byte[] bytes, string path, double scanSizeNm)
     {
+        var scientificTiff = TryDecodeScientificTiff(bytes, path, scanSizeNm);
+        if (scientificTiff is not null) return scientificTiff;
+
         var decoded = TryDecodeBitmapData(bytes);
         if (decoded is null && OperatingSystem.IsMacOS())
         {
@@ -62,6 +65,138 @@ public sealed class FileLoadingService
             Unit = "nm",
             ChannelDisplay = calibration is null ? "Image intensity" : $"Image intensity ({calibration.SourceLabel})",
             PreferScientificPreview = false
+        };
+    }
+
+    private static LoadedHeightMap? TryDecodeScientificTiff(byte[] bytes, string path, double scanSizeNm)
+    {
+        var ext = Path.GetExtension(path).TrimStart('.').ToLowerInvariant();
+        if (ext is not ("tif" or "tiff") || bytes.Length < 16) return null;
+
+        var littleEndian = bytes[0] == (byte)'I' && bytes[1] == (byte)'I';
+        var bigEndian = bytes[0] == (byte)'M' && bytes[1] == (byte)'M';
+        if (!littleEndian && !bigEndian) return null;
+
+        ushort ReadU16(int offset)
+        {
+            if (offset + 2 > bytes.Length) return 0;
+            return littleEndian
+                ? (ushort)(bytes[offset] | bytes[offset + 1] << 8)
+                : (ushort)(bytes[offset] << 8 | bytes[offset + 1]);
+        }
+
+        uint ReadU32(int offset)
+        {
+            if (offset + 4 > bytes.Length) return 0;
+            return littleEndian
+                ? (uint)(bytes[offset] | bytes[offset + 1] << 8 | bytes[offset + 2] << 16 | bytes[offset + 3] << 24)
+                : (uint)(bytes[offset] << 24 | bytes[offset + 1] << 16 | bytes[offset + 2] << 8 | bytes[offset + 3]);
+        }
+
+        if (ReadU16(2) != 42) return null;
+        var ifdOffset = (int)ReadU32(4);
+        if (ifdOffset <= 0 || ifdOffset + 2 > bytes.Length) return null;
+        var tagCount = ReadU16(ifdOffset);
+        var tags = new Dictionary<ushort, (ushort Type, uint Count, uint Value)>();
+        for (var i = 0; i < tagCount; i++)
+        {
+            var tagOffset = ifdOffset + 2 + i * 12;
+            if (tagOffset + 12 > bytes.Length) break;
+            var tag = ReadU16(tagOffset);
+            tags[tag] = (ReadU16(tagOffset + 2), ReadU32(tagOffset + 4), ReadU32(tagOffset + 8));
+        }
+
+        uint ReadTagScalar(ushort tag, uint fallback = 0)
+        {
+            if (!tags.TryGetValue(tag, out var entry)) return fallback;
+            if (entry.Type == 3 && entry.Count == 1) return littleEndian ? entry.Value & 0xffff : entry.Value >> 16;
+            return entry.Value;
+        }
+
+        uint[] ReadTagArray(ushort tag)
+        {
+            if (!tags.TryGetValue(tag, out var entry)) return Array.Empty<uint>();
+            if (entry.Count == 0) return Array.Empty<uint>();
+            if (entry.Count == 1) return [ReadTagScalar(tag)];
+            var typeSize = entry.Type == 3 ? 2 : 4;
+            var byteCount = checked((int)Math.Min(int.MaxValue, entry.Count * (uint)typeSize));
+            var offset = (int)entry.Value;
+            if (offset < 0 || offset + byteCount > bytes.Length) return Array.Empty<uint>();
+            var values = new uint[(int)Math.Min(int.MaxValue, entry.Count)];
+            for (var i = 0; i < values.Length; i++)
+            {
+                values[i] = entry.Type == 3 ? ReadU16(offset + i * 2) : ReadU32(offset + i * 4);
+            }
+            return values;
+        }
+
+        float ReadSingleValue(int offset)
+        {
+            Span<byte> buffer = stackalloc byte[4];
+            for (var i = 0; i < 4; i++) buffer[i] = bytes[offset + (littleEndian == BitConverter.IsLittleEndian ? i : 3 - i)];
+            return BitConverter.ToSingle(buffer);
+        }
+
+        double ReadDoubleValue(int offset)
+        {
+            Span<byte> buffer = stackalloc byte[8];
+            for (var i = 0; i < 8; i++) buffer[i] = bytes[offset + (littleEndian == BitConverter.IsLittleEndian ? i : 7 - i)];
+            return BitConverter.ToDouble(buffer);
+        }
+
+        var width = (int)ReadTagScalar(256);
+        var height = (int)ReadTagScalar(257);
+        var compression = ReadTagScalar(259, 1);
+        var bitsPerSample = (int)ReadTagArray(258).DefaultIfEmpty(ReadTagScalar(258, 8)).First();
+        var samplesPerPixel = (int)ReadTagScalar(277, 1);
+        var sampleFormat = (int)ReadTagScalar(339, 1);
+        var stripOffsets = ReadTagArray(273);
+        var stripByteCounts = ReadTagArray(279);
+        if (width <= 0 || height <= 0 || compression != 1 || samplesPerPixel != 1 || stripOffsets.Length == 0 || stripByteCounts.Length == 0)
+        {
+            return null;
+        }
+
+        if (bitsPerSample is not (16 or 32 or 64)) return null;
+        var data = new double[width * height];
+        var outputIndex = 0;
+        for (var strip = 0; strip < stripOffsets.Length && outputIndex < data.Length; strip++)
+        {
+            var offset = (int)stripOffsets[strip];
+            var byteCount = (int)stripByteCounts[Math.Min(strip, stripByteCounts.Length - 1)];
+            if (offset < 0 || byteCount <= 0 || offset + byteCount > bytes.Length) continue;
+            var bytesPerSample = bitsPerSample / 8;
+            var sampleCount = Math.Min((byteCount / bytesPerSample), data.Length - outputIndex);
+            for (var i = 0; i < sampleCount; i++)
+            {
+                var sampleOffset = offset + i * bytesPerSample;
+                data[outputIndex++] = bitsPerSample switch
+                {
+                    16 when sampleFormat == 2 => unchecked((short)ReadU16(sampleOffset)),
+                    16 => ReadU16(sampleOffset),
+                    32 when sampleFormat == 3 => ReadSingleValue(sampleOffset),
+                    32 when sampleFormat == 2 => unchecked((int)ReadU32(sampleOffset)),
+                    32 => ReadU32(sampleOffset),
+                    64 when sampleFormat == 3 => ReadDoubleValue(sampleOffset),
+                    _ => 0
+                };
+            }
+        }
+
+        if (outputIndex < Math.Min(data.Length, width * Math.Max(1, height / 2))) return null;
+        return new LoadedHeightMap
+        {
+            Name = Path.GetFileName(path),
+            FilePath = path,
+            Format = "TIFF height",
+            Width = width,
+            Height = height,
+            ScanSizeNm = scanSizeNm,
+            NmPerPixel = scanSizeNm / Math.Max(1, width),
+            Data = data,
+            Unit = "nm",
+            ChannelDisplay = "TIFF height channel",
+            PreferScientificPreview = true
         };
     }
 

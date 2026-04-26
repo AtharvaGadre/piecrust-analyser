@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.ComponentModel;
 using System.Text.Json;
 using Avalonia;
 using Avalonia.Controls;
@@ -57,10 +58,16 @@ public sealed class EquationDiscoveryService
         await File.WriteAllTextAsync(inputPath, JsonSerializer.Serialize(request, _jsonOptions), cancellationToken).ConfigureAwait(false);
 
         Exception? lastError = null;
+        var launchErrors = new List<string>();
         foreach (var candidate in GetPythonCommandCandidates())
         {
             try
             {
+                if (!Directory.Exists(workingDirectory))
+                {
+                    Directory.CreateDirectory(workingDirectory);
+                }
+
                 var startInfo = new ProcessStartInfo
                 {
                     FileName = candidate.FileName,
@@ -87,6 +94,11 @@ public sealed class EquationDiscoveryService
 
                 if (process.ExitCode != 0)
                 {
+                    if (LooksLikeMissingUnixPythonAlias(stderr, stdout))
+                    {
+                        launchErrors.Add($"{candidate.FileName} {string.Join(' ', candidate.ArgumentsPrefix)}".Trim());
+                        continue;
+                    }
                     lastError = new InvalidOperationException(string.IsNullOrWhiteSpace(stderr) ? stdout : stderr);
                     continue;
                 }
@@ -144,16 +156,52 @@ public sealed class EquationDiscoveryService
 
                 var result = JsonSerializer.Deserialize<EquationDiscoveryResult>(json, _jsonOptions);
                 if (result is null) throw new InvalidOperationException("Equation discovery output could not be parsed.");
+                if (result.EquationFamily.Count == 0)
+                {
+                    throw new InvalidOperationException(
+                        BuildResultConsistencyMessage(
+                            "Equation discovery returned no candidate equations.",
+                            stdout,
+                            stderr));
+                }
+                if (result.ObservedProfiles.Count == 0 || result.ProgressionProfiles.Count == 0)
+                {
+                    throw new InvalidOperationException(
+                        BuildResultConsistencyMessage(
+                            "Equation discovery returned an incomplete result (missing observed or progression profiles).",
+                            stdout,
+                            stderr));
+                }
                 result.RawJson = json;
                 return result;
             }
             catch (Exception ex) when (ex is not OperationCanceledException and not EquationDiscoveryStageValidationException)
             {
+                if (IsLaunchResolutionError(ex))
+                {
+                    launchErrors.Add($"{candidate.FileName} {string.Join(' ', candidate.ArgumentsPrefix)}".Trim());
+                    continue;
+                }
                 lastError = ex;
             }
         }
 
+        if (launchErrors.Count > 0 && lastError is null)
+        {
+            throw new InvalidOperationException(
+                $"Equation discovery could not find a usable Python interpreter. Tried: {string.Join(", ", launchErrors.Distinct(StringComparer.OrdinalIgnoreCase))}");
+        }
+
         throw lastError ?? new InvalidOperationException("Equation discovery could not start because no Python interpreter was available.");
+    }
+
+    private static string BuildResultConsistencyMessage(string message, string stdout, string stderr)
+    {
+        var details = string.IsNullOrWhiteSpace(stderr) ? stdout : stderr;
+        if (string.IsNullOrWhiteSpace(details)) return message;
+        details = details.Trim();
+        if (details.Length > 1200) details = details[..1200] + "…";
+        return $"{message}{Environment.NewLine}{Environment.NewLine}{details}";
     }
 
     private static string ResolveScriptPath()
@@ -184,11 +232,84 @@ public sealed class EquationDiscoveryService
             };
         }
 
-        return new[]
+        var candidates = new List<(string FileName, string[] ArgumentsPrefix)>();
+        foreach (var resolved in ResolveUnixPythonPaths())
         {
-            ("python3", Array.Empty<string>()),
-            ("python", Array.Empty<string>())
+            candidates.Add((resolved, Array.Empty<string>()));
+        }
+
+        candidates.Add(("/usr/bin/env", new[] { "python3" }));
+        return candidates;
+    }
+
+    private static IEnumerable<string> ResolveUnixPythonPaths()
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var candidate in EnumeratePathMatches("python3"))
+        {
+            if (File.Exists(candidate) && seen.Add(candidate))
+            {
+                yield return candidate;
+            }
+        }
+
+        var commonPaths = new[]
+        {
+            "/opt/homebrew/bin/python3",
+            "/usr/local/bin/python3",
+            "/usr/bin/python3",
+            "/Library/Frameworks/Python.framework/Versions/Current/bin/python3"
         };
+
+        foreach (var candidate in commonPaths)
+        {
+            if (File.Exists(candidate) && seen.Add(candidate))
+            {
+                yield return candidate;
+            }
+        }
+
+        const string frameworkRoot = "/Library/Frameworks/Python.framework/Versions";
+        if (!Directory.Exists(frameworkRoot)) yield break;
+
+        foreach (var versionDir in Directory.GetDirectories(frameworkRoot)
+                     .OrderByDescending(Path.GetFileName, StringComparer.OrdinalIgnoreCase))
+        {
+            var candidate = Path.Combine(versionDir, "bin", "python3");
+            if (File.Exists(candidate) && seen.Add(candidate))
+            {
+                yield return candidate;
+            }
+        }
+    }
+
+    private static IEnumerable<string> EnumeratePathMatches(string executableName)
+    {
+        var path = Environment.GetEnvironmentVariable("PATH");
+        if (string.IsNullOrWhiteSpace(path)) yield break;
+
+        foreach (var segment in path.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var candidate = Path.Combine(segment, executableName);
+            if (File.Exists(candidate))
+            {
+                yield return candidate;
+            }
+        }
+    }
+
+    private static bool IsLaunchResolutionError(Exception ex) =>
+        ex is Win32Exception ||
+        ex is FileNotFoundException ||
+        ex.Message.Contains("No such file or directory", StringComparison.OrdinalIgnoreCase) ||
+        ex.Message.Contains("cannot find the file", StringComparison.OrdinalIgnoreCase);
+
+    private static bool LooksLikeMissingUnixPythonAlias(string stderr, string stdout)
+    {
+        var details = string.IsNullOrWhiteSpace(stderr) ? stdout : stderr;
+        return details.Contains("env: python: No such file or directory", StringComparison.OrdinalIgnoreCase) ||
+               details.Contains("python: No such file or directory", StringComparison.OrdinalIgnoreCase);
     }
 
     private static EquationDiscoveryStageValidation? ParseStageValidation(JsonElement root)

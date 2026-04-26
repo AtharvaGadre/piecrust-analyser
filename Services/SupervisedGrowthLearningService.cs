@@ -28,11 +28,15 @@ public readonly record struct GrowthPredictionContext(
     double PeakSeparationNm,
     double DipDepthNm,
     double RoughnessNm,
-    double Continuity);
+    double Continuity,
+    double MeanEdgeAngleDeg,
+    double AreaProxyNm2,
+    double CurvatureMean,
+    double CurvatureMax);
 
 public sealed class SupervisedGrowthLearningService
 {
-    private const int FeatureVersion = 2;
+    private const int FeatureVersion = 3;
     private const int TargetVersion = 1;
     private readonly JsonSerializerOptions _jsonOptions = new()
     {
@@ -155,7 +159,11 @@ public sealed class SupervisedGrowthLearningService
                     summary.PeakSeparationNm,
                     summary.DipDepthNm,
                     summary.RoughnessNm,
-                    summary.Continuity)),
+                    summary.Continuity,
+                    summary.MeanEdgeAngleDeg,
+                    summary.MeanAreaProxyWidthHeightNm2,
+                    summary.CurvatureMean,
+                    summary.CurvatureMax)),
                 Targets = targets
             };
         }
@@ -338,7 +346,11 @@ public sealed class SupervisedGrowthLearningService
             Math.Max(0, context.PeakSeparationNm),
             Math.Max(0, context.DipDepthNm),
             Math.Max(0, context.RoughnessNm),
-            StatisticsAndGeometry.Clamp(context.Continuity, 0, 1)
+            StatisticsAndGeometry.Clamp(context.Continuity, 0, 1),
+            Math.Max(0, context.MeanEdgeAngleDeg),
+            Math.Max(0, context.AreaProxyNm2),
+            Math.Max(0, context.CurvatureMean),
+            Math.Max(0, context.CurvatureMax)
         ];
     }
 

@@ -4,6 +4,9 @@ namespace PiecrustAnalyser.CSharp.Services;
 
 public sealed class HeightMapDisplayService
 {
+    public const double DefaultScientificColorMinNm = 150.0;
+    public const double DefaultScientificColorMaxNm = 600.0;
+
     public LoadedHeightMap Prepare(LoadedHeightMap source)
     {
         var raw = source.Data?.Length > 0 ? source.Data.ToArray() : Array.Empty<double>();
@@ -12,7 +15,6 @@ public sealed class HeightMapDisplayService
             return source;
         }
 
-        var calibratedSpm = IsCalibratedSpmDisplay(source);
         var analysis = raw.ToArray();
         var display = raw.ToArray();
         var displayReference = EstimateQuantile(raw, 0.5);
@@ -20,24 +22,29 @@ public sealed class HeightMapDisplayService
 
         if (source.PreferScientificPreview)
         {
-            var leveled = RobustLevelHeightMap(raw, source.Width, source.Height, 3);
-            var lineCorrected = RemoveScanLineNoise(leveled, source.Width, source.Height, 0.48, out _);
+            var leveled = RobustLevelHeightMap(raw, source.Width, source.Height, 4);
+            var rowFlattened = RobustRowFlatten(leveled, source.Width, source.Height);
+            var lineCorrected = RemoveScanLineNoise(rowFlattened, source.Width, source.Height, 0.92, out _);
             estimatedNoiseSigma = EstimateNoiseSigma(lineCorrected, source.Width, source.Height);
-            var correctedBase = EdgeAwareSmoothHeightMap(lineCorrected, source.Width, source.Height, Math.Max(0.05, estimatedNoiseSigma), 1.2, 2);
-            var analysisBase = SmoothHeightMap(correctedBase, source.Width, source.Height, 0.12, 2);
+            var analysisBase = EdgeAwareSmoothHeightMap(lineCorrected, source.Width, source.Height, Math.Max(0.05, estimatedNoiseSigma), 0.55, 1);
             analysis = analysisBase;
-            display = new double[correctedBase.Length];
-            for (var i = 0; i < correctedBase.Length; i++) display[i] = correctedBase[i] + displayReference;
+            display = RecenterHeightMap(lineCorrected, displayReference);
         }
 
+        var scientificHeightDisplay = IsScientificHeightDisplay(source);
         var fallbackFullRange = GetDataRange(display);
-        var fullRange = calibratedSpm ? SanitizeRange(100, 800, fallbackFullRange) : fallbackFullRange;
+        var fullRange = scientificHeightDisplay
+            ? SanitizeRange(
+                Math.Min(fallbackFullRange.Min, DefaultScientificColorMinNm),
+                Math.Max(fallbackFullRange.Max, DefaultScientificColorMaxNm),
+                fallbackFullRange)
+            : fallbackFullRange;
         var autoRaw = ComputePercentileRange(display, 0.005, 0.995);
         var autoRange = ClampRange(fullRange, autoRaw.Min, autoRaw.Max);
-        var suggestedRange = calibratedSpm
-            ? ClampRange(fullRange, 350, 500)
+        var suggestedRange = scientificHeightDisplay
+            ? NormalizeFixedRange(DefaultScientificColorMinNm, DefaultScientificColorMaxNm, fullRange)
             : RoundDisplayRangeNice(fullRange);
-        var displayMode = calibratedSpm ? "fixed" : "auto";
+        var displayMode = scientificHeightDisplay ? "fixed" : "auto";
 
         return new LoadedHeightMap
         {
@@ -177,6 +184,22 @@ public sealed class HeightMapDisplayService
         return (lo, hi);
     }
 
+    public (double Min, double Max) NormalizeFixedRange(double min, double max, (double Min, double Max) fallback)
+    {
+        var safeFallback = SanitizeRange(fallback.Min, fallback.Max, (DefaultScientificColorMinNm, DefaultScientificColorMaxNm));
+        var lo = double.IsFinite(min) ? min : safeFallback.Min;
+        var hi = double.IsFinite(max) ? max : safeFallback.Max;
+        var minGap = Math.Max(1e-6, Math.Abs(safeFallback.Max - safeFallback.Min) / 2000.0);
+        if (hi <= lo)
+        {
+            var center = double.IsFinite(lo) ? lo : safeFallback.Min;
+            lo = center;
+            hi = center + minGap;
+        }
+
+        return (lo, hi);
+    }
+
     public (double Min, double Max) RoundDisplayRangeNice((double Min, double Max) range)
     {
         var safe = SanitizeRange(range.Min, range.Max, (0, 1));
@@ -187,6 +210,11 @@ public sealed class HeightMapDisplayService
     private static bool IsCalibratedSpmDisplay(LoadedHeightMap source) =>
         string.Equals(source.Format, "Bruker", StringComparison.OrdinalIgnoreCase) &&
         string.Equals(source.Unit, "nm", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsScientificHeightDisplay(LoadedHeightMap source) =>
+        string.Equals(source.Unit, "nm", StringComparison.OrdinalIgnoreCase) &&
+        !source.ChannelDisplay.StartsWith("Image intensity", StringComparison.OrdinalIgnoreCase) &&
+        (source.PreferScientificPreview || IsCalibratedSpmDisplay(source));
 
     private static (double Min, double Max) SanitizeRange(double min, double max, (double Min, double Max) fallback)
     {
@@ -281,6 +309,79 @@ public sealed class HeightMapDisplayService
                 output[index] = raw[index] - (coefficients.A * x + coefficients.B * y + coefficients.C);
             }
         }
+        return output;
+    }
+
+    private static double[] RobustRowFlatten(IReadOnlyList<double> source, int width, int height)
+    {
+        var output = new double[source.Count];
+        if (source.Count == 0 || width < 4 || height < 2) return source.ToArray();
+        var step = Math.Max(1, width / 512);
+
+        for (var y = 0; y < height; y++)
+        {
+            var rowStart = y * width;
+            var samples = new List<double>(Math.Min(width, 512));
+            for (var x = 0; x < width; x += step)
+            {
+                var value = source[rowStart + x];
+                if (double.IsFinite(value)) samples.Add(value);
+            }
+
+            if (samples.Count < 4)
+            {
+                for (var x = 0; x < width; x++) output[rowStart + x] = source[rowStart + x];
+                continue;
+            }
+
+            samples.Sort();
+            var lo = samples[Math.Clamp((int)Math.Floor((samples.Count - 1) * 0.08), 0, samples.Count - 1)];
+            var hi = samples[Math.Clamp((int)Math.Floor((samples.Count - 1) * 0.72), 0, samples.Count - 1)];
+            var median = MedianFromSorted(samples);
+            double sx = 0, sz = 0, sxx = 0, sxz = 0;
+            var count = 0;
+
+            for (var x = 0; x < width; x += step)
+            {
+                var value = source[rowStart + x];
+                if (!double.IsFinite(value) || value < lo || value > hi) continue;
+                sx += x;
+                sz += value;
+                sxx += x * x;
+                sxz += x * value;
+                count++;
+            }
+
+            var slope = 0.0;
+            var intercept = median;
+            var determinant = count * sxx - sx * sx;
+            if (count >= 6 && Math.Abs(determinant) > 1e-9)
+            {
+                slope = (count * sxz - sx * sz) / determinant;
+                intercept = (sz - slope * sx) / count;
+            }
+
+            for (var x = 0; x < width; x++)
+            {
+                var value = source[rowStart + x];
+                output[rowStart + x] = double.IsFinite(value) ? value - (slope * x + intercept) : 0;
+            }
+        }
+
+        return output;
+    }
+
+    private static double[] RecenterHeightMap(IReadOnlyList<double> source, double reference)
+    {
+        if (source.Count == 0) return Array.Empty<double>();
+        var center = EstimateQuantile(source, 0.5);
+        var output = new double[source.Count];
+        for (var i = 0; i < source.Count; i++)
+        {
+            var value = source[i];
+            output[i] = double.IsFinite(value) ? value - center + reference : reference;
+        }
+
         return output;
     }
 
