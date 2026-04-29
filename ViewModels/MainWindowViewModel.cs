@@ -52,6 +52,8 @@ public sealed partial class MainWindowViewModel : ViewModelBase
     private bool _syncingSelectedDisplayControls;
     private bool _isApplyingAutomaticSequenceOrdering;
     private bool _isApplyingAutomaticConditionClassification;
+    private bool _isRestoringSession;
+    private bool _deferRefreshDuringSessionRestore;
     private string? _lastLoggedStatusText;
 
     public IReadOnlyList<string> ConditionOptions { get; } = new[] { "unassigned", "control", "treated" };
@@ -150,6 +152,8 @@ public sealed partial class MainWindowViewModel : ViewModelBase
     [ObservableProperty] private string controlAngleHeightScatterLegendText = "Control angle plot uses only control images.";
     [ObservableProperty] private IReadOnlyList<PolylineSeries> treatedAngleHeightScatterSeries = Array.Empty<PolylineSeries>();
     [ObservableProperty] private string treatedAngleHeightScatterLegendText = "Treated angle plot uses only treated images.";
+    [ObservableProperty] private IReadOnlyList<PolylineSeries> conditionAngleComparisonSeries = Array.Empty<PolylineSeries>();
+    [ObservableProperty] private string conditionAngleComparisonLegendText = "Control and treated angle points will appear here once guided summaries are available.";
     [ObservableProperty] private string angleConstructionText = "Angle construction: run guided extraction to show peak-to-base geometry.";
     [ObservableProperty] private string conditionComparisonSummaryText = "Control/treated comparison will appear once guided extractions are available.";
     [ObservableProperty] private string overallCompromiseSummaryText = "Overall control-relative compromise will appear once treated and control files are available.";
@@ -420,6 +424,8 @@ public sealed partial class MainWindowViewModel : ViewModelBase
         try
         {
             _suspendSessionPersistence = true;
+            _deferRefreshDuringSessionRestore = true;
+            _isRestoringSession = true;
             var existingPaths = snapshot.Files
                 .Select(file => file.FilePath)
                 .Where(File.Exists)
@@ -496,6 +502,8 @@ public sealed partial class MainWindowViewModel : ViewModelBase
         }
         finally
         {
+            _isRestoringSession = false;
+            _deferRefreshDuringSessionRestore = false;
             _suspendSessionPersistence = false;
             PersistSessionIfPossible();
         }
@@ -573,10 +581,13 @@ public sealed partial class MainWindowViewModel : ViewModelBase
             }
         }
 
-        InvalidateSimulationCache();
-        RefreshDerivedState();
-        StatusText = Files.Count == 0 ? "No readable files were loaded." : $"Loaded {Files.Count} file(s).";
-        PersistSessionIfPossible();
+        if (!_deferRefreshDuringSessionRestore)
+        {
+            InvalidateSimulationCache();
+            RefreshDerivedState();
+            StatusText = Files.Count == 0 ? "No readable files were loaded." : $"Loaded {Files.Count} file(s).";
+            PersistSessionIfPossible();
+        }
     }
 
     partial void OnStatusTextChanged(string value)
@@ -967,6 +978,16 @@ public sealed partial class MainWindowViewModel : ViewModelBase
         return sb.ToString();
     }
 
+    public string BuildCurrentLineProfilePlotCsv()
+    {
+        if (CurrentProfileSeries.Count == 0) return string.Empty;
+        return BuildPlotSeriesCsv(
+            "current_line_profile",
+            CurrentProfileSeries,
+            CurrentProfileXAxisLabel,
+            CurrentProfileYAxisLabel);
+    }
+
     public string BuildStageBoxPlotsCsv()
     {
         var sb = new StringBuilder();
@@ -1003,6 +1024,16 @@ public sealed partial class MainWindowViewModel : ViewModelBase
         {
             AppendBoxPlotRow(sb, "height_to_width_ratio", dataset);
         }
+        return sb.ToString();
+    }
+
+    public string BuildStageBoxPlotDataCsv()
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("plot_name,measurement,label,sequence_order,stage,file_name,count,mean,median,q1,q3,whisker_low,whisker_high,sem,stddev,mean_marker,mean_error");
+        AppendBoxPlotDatasetRows(sb, "height_box_plot", "height_nm", HeightBoxPlots);
+        AppendBoxPlotDatasetRows(sb, "width_box_plot", "width_nm", WidthBoxPlots);
+        AppendBoxPlotDatasetRows(sb, "ratio_box_plot", "height_to_width_ratio", HeightWidthRatioBoxPlots);
         return sb.ToString();
     }
 
@@ -1087,6 +1118,26 @@ public sealed partial class MainWindowViewModel : ViewModelBase
         return sb.ToString();
     }
 
+    public string BuildAnglePlotDataCsv()
+    {
+        var sections = new List<string>();
+        var control = BuildPlotSeriesCsv(
+            "control_growth_angle",
+            ControlAngleHeightScatterSeries,
+            "Piecrust height [nm]",
+            "outer theta [deg]");
+        if (!string.IsNullOrWhiteSpace(control)) sections.Add(control);
+
+        var treated = BuildPlotSeriesCsv(
+            "treated_growth_angle",
+            TreatedAngleHeightScatterSeries,
+            "Piecrust height [nm]",
+            "outer theta [deg]");
+        if (!string.IsNullOrWhiteSpace(treated)) sections.Add(treated);
+
+        return string.Join(Environment.NewLine + Environment.NewLine, sections);
+    }
+
     public string BuildGrowthModelCsv()
     {
         if (SimulationStartFile is null || SimulationEndFile is null) return string.Empty;
@@ -1139,6 +1190,16 @@ public sealed partial class MainWindowViewModel : ViewModelBase
             }
         }
         return sb.ToString();
+    }
+
+    public string BuildGrowthModelPlotDataCsv()
+    {
+        if (SimulationSeries.Count == 0) return string.Empty;
+        return BuildPlotSeriesCsv(
+            "growth_model_visible_series",
+            SimulationSeries,
+            SimulationXAxisLabel,
+            SimulationYAxisLabel);
     }
 
     public async Task DiscoverGrowthEquationsAsync()
@@ -1339,6 +1400,40 @@ public sealed partial class MainWindowViewModel : ViewModelBase
         }
 
         return sb.ToString();
+    }
+
+    public string BuildEquationPlotDataCsv()
+    {
+        var sections = new List<string>();
+        var overlay = BuildPlotSeriesCsv(
+            "equation_overlay",
+            EquationOverlaySeries,
+            EquationDiscoveryXAxisLabel,
+            EquationDiscoveryYAxisLabel);
+        if (!string.IsNullOrWhiteSpace(overlay)) sections.Add(overlay);
+
+        var progression = BuildPlotSeriesCsv(
+            "equation_progression",
+            EquationProgressionSeries,
+            EquationDiscoveryXAxisLabel,
+            EquationDiscoveryYAxisLabel);
+        if (!string.IsNullOrWhiteSpace(progression)) sections.Add(progression);
+
+        var diagnostics = BuildPlotSeriesCsv(
+            "equation_diagnostics",
+            EquationDiagnosticsSeries,
+            EquationDiscoveryXAxisLabel,
+            "Residual height [nm]");
+        if (!string.IsNullOrWhiteSpace(diagnostics)) sections.Add(diagnostics);
+
+        var playback = BuildPlotSeriesCsv(
+            "equation_playback",
+            EquationPlaybackSeries,
+            EquationDiscoveryXAxisLabel,
+            EquationDiscoveryYAxisLabel);
+        if (!string.IsNullOrWhiteSpace(playback)) sections.Add(playback);
+
+        return string.Join(Environment.NewLine + Environment.NewLine, sections);
     }
 
     public string BuildSelectedEquationClipboardText()
@@ -1545,11 +1640,16 @@ public sealed partial class MainWindowViewModel : ViewModelBase
         ControlAngleHeightScatterLegendText = controlLegend;
         TreatedAngleHeightScatterSeries = BuildConditionAngleScatterSeries("treated", "#ef6c5b", out var treatedLegend);
         TreatedAngleHeightScatterLegendText = treatedLegend;
+        ConditionAngleComparisonSeries = BuildCombinedConditionAngleScatterSeries(out var combinedLegend);
+        ConditionAngleComparisonLegendText = combinedLegend;
         RefreshAutomaticOrganisationSummaryText();
         RefreshConditionComparisonSummaryText();
         EnsureSimulationReferences();
         RefreshEvolutionSeries();
-        RefreshSimulationSeries();
+        if (ShouldRefreshSimulationSeries())
+        {
+            RefreshSimulationSeries();
+        }
         RefreshSelectedSummaryText();
         PersistSessionIfPossible();
     }
@@ -1750,6 +1850,21 @@ public sealed partial class MainWindowViewModel : ViewModelBase
         return series;
     }
 
+    private IReadOnlyList<PolylineSeries> BuildCombinedConditionAngleScatterSeries(out string legendText)
+    {
+        if (!ShowAngleHeightScatter)
+        {
+            legendText = "Scatter display is disabled.";
+            return Array.Empty<PolylineSeries>();
+        }
+
+        var control = BuildConditionAngleScatterSeries("control", "#64b5f6", out var controlLegend);
+        var treated = BuildConditionAngleScatterSeries("treated", "#ef6c5b", out var treatedLegend);
+        var merged = control.Concat(treated).ToArray();
+        legendText = $"Control = blue | Treated = red. {controlLegend} {treatedLegend}";
+        return merged;
+    }
+
     private void RefreshAutomaticOrganisationSummaryText()
     {
         var controlCount = Files.Count(file => string.Equals(file.ConditionType, "control", StringComparison.OrdinalIgnoreCase));
@@ -1816,6 +1931,11 @@ public sealed partial class MainWindowViewModel : ViewModelBase
         }
         CurrentProfileSeries = series;
     }
+
+    private bool ShouldRefreshSimulationSeries() =>
+        SelectedTabIndex == GrowthModelTabIndex ||
+        SelectedTabIndex == EquationDiscoveryTabIndex ||
+        _surfaceSimulationCache is not null;
 
     private void AddFigure5ConstructionSeries(List<PolylineSeries> series, IReadOnlyList<PlotPoint> profile)
     {
@@ -3449,8 +3569,6 @@ public sealed partial class MainWindowViewModel : ViewModelBase
     private static double ComputeProfileWidthNm(IReadOnlyList<PlotPoint> profile)
     {
         if (profile.Count < 3) return 0;
-        var peakSeparation = ComputeProfilePeakSeparationNm(profile);
-        if (peakSeparation > 1e-9) return peakSeparation;
         var peak = ComputeProfilePeakHeight(profile);
         if (!(peak > 1e-9)) return 0;
         var half = peak * 0.5;
@@ -3871,6 +3989,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase
     private void OnFileStateChanged(object? sender, PropertyChangedEventArgs e)
     {
         if (sender is not PiecrustFileState file) return;
+        if (_isRestoringSession) return;
         if (_isApplyingAutomaticSequenceOrdering && e.PropertyName == nameof(PiecrustFileState.SequenceOrder)) return;
         if (_isApplyingAutomaticConditionClassification && e.PropertyName == nameof(PiecrustFileState.ConditionType)) return;
         if (e.PropertyName is not (nameof(PiecrustFileState.Stage)
@@ -3931,6 +4050,8 @@ public sealed partial class MainWindowViewModel : ViewModelBase
         ControlAngleHeightScatterLegendText = controlLegend;
         TreatedAngleHeightScatterSeries = BuildConditionAngleScatterSeries("treated", "#ef6c5b", out var treatedLegend);
         TreatedAngleHeightScatterLegendText = treatedLegend;
+        ConditionAngleComparisonSeries = BuildCombinedConditionAngleScatterSeries(out var combinedLegend);
+        ConditionAngleComparisonLegendText = combinedLegend;
         PersistSessionIfPossible();
     }
     partial void OnAngleScatterProfilesPerImageChanged(int value)
@@ -3947,6 +4068,8 @@ public sealed partial class MainWindowViewModel : ViewModelBase
         ControlAngleHeightScatterLegendText = controlLegend;
         TreatedAngleHeightScatterSeries = BuildConditionAngleScatterSeries("treated", "#ef6c5b", out var treatedLegend);
         TreatedAngleHeightScatterLegendText = treatedLegend;
+        ConditionAngleComparisonSeries = BuildCombinedConditionAngleScatterSeries(out var combinedLegend);
+        ConditionAngleComparisonLegendText = combinedLegend;
         if (_equationDiscoveryResult is not null)
         {
             EquationDiscoveryProfileModeText =
@@ -4001,7 +4124,14 @@ public sealed partial class MainWindowViewModel : ViewModelBase
         }
     }
 
-    partial void OnSelectedTabIndexChanged(int value) => PersistSessionIfPossible();
+    partial void OnSelectedTabIndexChanged(int value)
+    {
+        if (ShouldRefreshSimulationSeries())
+        {
+            RefreshSimulationSeries();
+        }
+        PersistSessionIfPossible();
+    }
 
     partial void OnSimulationStartFileChanged(PiecrustFileState? value)
     {
@@ -4082,8 +4212,8 @@ public sealed partial class MainWindowViewModel : ViewModelBase
         SimulationPlotFixedYMin = 0;
         SimulationPlotFixedYMax = GetSimulationPlotYMax(simulation);
         SimulationPlotLegendText = simulation.FuturePredictionEnabled
-            ? $"Dotted cyan = fitted observed interval | Dashed amber = post-tau continuation from the last bimodal frame | Solid = {ToGrowthModelModeLabel(simulation.ConstraintMode)} bimodal Gaussian fit"
-            : $"Dotted = centered evolving cross-section | Solid = {ToGrowthModelModeLabel(simulation.ConstraintMode)} bimodal Gaussian fit";
+            ? $"Dashed amber = post-tau continuation from the last bimodal frame | Solid = {ToGrowthModelModeLabel(simulation.ConstraintMode)} bimodal Gaussian fit"
+            : $"Solid = {ToGrowthModelModeLabel(simulation.ConstraintMode)} bimodal Gaussian fit";
         SimulationReferenceSummaryText = BuildSimulationReferenceSummary(simulation);
         var alignmentText = simulation.UsesGuidedAlignment
             ? "The simulation uses the guided corridor region, widened to corridor + 20%, then keeps each cross-section centered so the morphology grows in place instead of drifting laterally."
@@ -4162,12 +4292,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase
         }
         if (fittedProfile.Count == 0 && rawProfile.Count == 0) return Array.Empty<PolylineSeries>();
 
-        var series = new List<PolylineSeries>(2);
-        if (rawProfile.Count > 0)
-        {
-            series.Add(new PolylineSeries(rawProfile.ToArray(), isFuture ? "#f0c978" : "#7ed9ff", 2.2, 0.95, Dashed: isFuture, Dotted: !isFuture));
-        }
-
+        var series = new List<PolylineSeries>(1);
         if (fittedProfile.Count > 0)
         {
             series.Add(new PolylineSeries(fittedProfile.ToArray(), "#fff4d8", 2.7, 1.0, Dashed: isFuture));
@@ -4343,6 +4468,71 @@ public sealed partial class MainWindowViewModel : ViewModelBase
             stats.WhiskerHigh.ToString("F4", CultureInfo.InvariantCulture),
             stats.StandardError.ToString("F4", CultureInfo.InvariantCulture),
             stats.StandardDeviation.ToString("F4", CultureInfo.InvariantCulture)));
+    }
+
+    private static void AppendBoxPlotDatasetRows(StringBuilder sb, string plotName, string measurement, IReadOnlyList<BoxPlotDataset> datasets)
+    {
+        foreach (var dataset in datasets)
+        {
+            var stats = dataset.Stats;
+            sb.AppendLine(string.Join(",",
+                Csv(plotName),
+                Csv(measurement),
+                Csv(dataset.Label),
+                dataset.SequenceOrder.ToString(CultureInfo.InvariantCulture),
+                Csv(dataset.Stage),
+                Csv(dataset.FileName),
+                stats.Count.ToString(CultureInfo.InvariantCulture),
+                stats.Mean.ToString("F6", CultureInfo.InvariantCulture),
+                stats.Median.ToString("F6", CultureInfo.InvariantCulture),
+                stats.Q1.ToString("F6", CultureInfo.InvariantCulture),
+                stats.Q3.ToString("F6", CultureInfo.InvariantCulture),
+                stats.WhiskerLow.ToString("F6", CultureInfo.InvariantCulture),
+                stats.WhiskerHigh.ToString("F6", CultureInfo.InvariantCulture),
+                stats.StandardError.ToString("F6", CultureInfo.InvariantCulture),
+                stats.StandardDeviation.ToString("F6", CultureInfo.InvariantCulture),
+                dataset.MeanMarker.ToString("F6", CultureInfo.InvariantCulture),
+                dataset.MeanError.ToString("F6", CultureInfo.InvariantCulture)));
+        }
+    }
+
+    private static string BuildPlotSeriesCsv(string plotName, IReadOnlyList<PolylineSeries> series, string xAxisLabel, string yAxisLabel)
+    {
+        if (series.Count == 0) return string.Empty;
+
+        var sb = new StringBuilder();
+        sb.AppendLine($"plot_name,{Csv(plotName)}");
+        sb.AppendLine($"x_axis_label,{Csv(xAxisLabel)}");
+        sb.AppendLine($"y_axis_label,{Csv(yAxisLabel)}");
+        sb.AppendLine("plot_name,series_index,series_name,style,color,point_index,x,y");
+
+        for (var seriesIndex = 0; seriesIndex < series.Count; seriesIndex++)
+        {
+            var item = series[seriesIndex];
+            var style = item.PointsOnly
+                ? "points"
+                : item.Dotted
+                    ? "dotted"
+                    : item.Dashed
+                        ? "dashed"
+                        : "solid";
+            var seriesName = $"{plotName}_series_{seriesIndex + 1}";
+            for (var pointIndex = 0; pointIndex < item.Points.Count; pointIndex++)
+            {
+                var point = item.Points[pointIndex];
+                sb.AppendLine(string.Join(",",
+                    Csv(plotName),
+                    seriesIndex.ToString(CultureInfo.InvariantCulture),
+                    Csv(seriesName),
+                    Csv(style),
+                    Csv(item.Color),
+                    pointIndex.ToString(CultureInfo.InvariantCulture),
+                    point.X.ToString("F6", CultureInfo.InvariantCulture),
+                    point.Y.ToString("F6", CultureInfo.InvariantCulture)));
+            }
+        }
+
+        return sb.ToString();
     }
 
     private static void AppendEquationCurvesCsv(StringBuilder sb, IReadOnlyList<EquationDiscoveryCurve> curves)

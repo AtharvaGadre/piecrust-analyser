@@ -218,9 +218,12 @@
                         <StackPanel Orientation="Horizontal" Spacing="10">
                             <TextBlock Text="Line Profile" FontWeight="Bold" Foreground="#d8b07a" VerticalAlignment="Center"/>
                             <Button Content="Download Line Profile CSV" Click="OnExportLineProfileCsvClick"/>
+                            <Button Content="Download Plot Data CSV" Click="OnExportLineProfilePlotCsvClick"/>
+                            <Button Content="Download Plot PNG" Click="OnExportLineProfilePngClick"/>
                         </StackPanel>
                         <Border Background="#161008" BorderBrush="#352615" BorderThickness="1" CornerRadius="8" MinWidth="980" Height="340">
-                            <controls:LinePlotControl Series="{Binding CurrentProfileSeries}"
+                            <controls:LinePlotControl x:Name="CurrentProfilePlot"
+                                                      Series="{Binding CurrentProfileSeries}"
                                                       Title="Line Profile"
                                                       XAxisLabel="{Binding CurrentProfileXAxisLabel}"
                                                       YAxisLabel="{Binding CurrentProfileYAxisLabel}"
@@ -233,12 +236,14 @@
 
             <TabItem Header="Box Plots">
                 <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
-                    <StackPanel Margin="10" Spacing="8" MinWidth="1040">
+                    <StackPanel x:Name="BoxPlotsExportPanel" Margin="10" Spacing="8" MinWidth="1040">
                         <StackPanel Orientation="Horizontal" Spacing="10">
                             <TextBlock Text="Guided Box Plots" FontWeight="Bold" Foreground="#d8b07a" VerticalAlignment="Center"/>
                             <TextBlock Text="Analysis Cohort" VerticalAlignment="Center"/>
                             <ComboBox ItemsSource="{Binding AnalysisCohortOptions}" SelectedItem="{Binding SelectedAnalysisCohort, Mode=TwoWay}" Width="140"/>
                             <Button Content="Download Box Plot CSV" Click="OnExportBoxPlotsCsvClick"/>
+                            <Button Content="Download Plot Data CSV" Click="OnExportBoxPlotDataCsvClick"/>
+                            <Button Content="Download Plot PNG" Click="OnExportBoxPlotsPngClick"/>
                         </StackPanel>
                         <TextBlock Text="Each box is built from line profiles sampled perpendicular to the guided centre line. Heights now use the raw peak values from those sampled profiles, while widths still use tramline peak separation. The selected cohort controls which condition bucket is included in these plots and summaries." TextWrapping="Wrap" Foreground="#bca37d"/>
                         <TextBlock Text="Per-stage summary from image-level replicates" FontWeight="Bold" Foreground="#d8b07a"/>
@@ -278,7 +283,7 @@
 
             <TabItem Header="Growth Angle">
                 <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
-                    <StackPanel Margin="10" Spacing="10" MinWidth="1040">
+                    <StackPanel x:Name="GrowthAnglePlotsPanel" Margin="10" Spacing="10" MinWidth="1040">
                         <TextBlock Text="Growth-angle model: the app finds the fitted/smoothed profile peak, finds the nearest near-baseline point on the selected outer flank, draws the construction triangle, and reports the outer angle θ = 180° - atan2(peak-base height, lateral distance). It only reaches 90° if the outer flank becomes close to vertical; otherwise it stays above 90° because the measured geometry itself is shallower." TextWrapping="Wrap" Foreground="#bca37d"/>
                         <TextBlock Text="{Binding GeometryGrowthSummaryText}" TextWrapping="Wrap" Foreground="#d8c29a"/>
                         <Grid ColumnDefinitions="1.28*,1*" ColumnSpacing="14">
@@ -315,32 +320,24 @@
                                     <TextBlock Text="Angle Coupling" FontWeight="Bold" Foreground="#d8b07a"/>
                                     <WrapPanel ItemWidth="210" Orientation="Horizontal">
                                         <Button Content="Download angle vs height CSV" Click="OnExportAngleVsHeightCsvClick" Margin="0,0,12,8"/>
+                                        <Button Content="Download Plot Data CSV" Click="OnExportAnglePlotDataCsvClick" Margin="0,0,12,8"/>
+                                        <Button Content="Download Plot PNG" Click="OnExportAnglePlotsPngClick" Margin="0,0,12,8"/>
                                     </WrapPanel>
                                     <TextBlock Text="The angle tab now supports extraction, scatter plotting, CSV export, and a quadratic angle-height comparison anchor within the observed sequence only. Future tau prediction has been removed." TextWrapping="Wrap" Foreground="#bca37d"/>
                                 </StackPanel>
                             </Border>
                         </Grid>
-                        <Border Background="#120c07" BorderBrush="#4b361f" BorderThickness="1" CornerRadius="6" Height="340">
-                            <controls:LinePlotControl Series="{Binding ControlAngleHeightScatterSeries}"
-                                                      Title="Control Outer Growth Angle vs Piecrust Height"
+                        <Border Background="#120c07" BorderBrush="#4b361f" BorderThickness="1" CornerRadius="6" Height="360">
+                            <controls:LinePlotControl Series="{Binding ConditionAngleComparisonSeries}"
+                                                      Title="Control vs Treated Outer Growth Angle"
                                                       XAxisLabel="Piecrust height [nm]"
                                                       YAxisLabel="outer θ [deg]"
                                                       FixedYMin="90"
                                                       FixedYMax="180"
                                                       LightTheme="True"/>
                         </Border>
-                        <TextBlock Text="{Binding ControlAngleHeightScatterLegendText}" TextWrapping="Wrap" Foreground="#f0c978"/>
-                        <Border Background="#120c07" BorderBrush="#4b361f" BorderThickness="1" CornerRadius="6" Height="340">
-                            <controls:LinePlotControl Series="{Binding TreatedAngleHeightScatterSeries}"
-                                                      Title="Treated Outer Growth Angle vs Piecrust Height"
-                                                      XAxisLabel="Piecrust height [nm]"
-                                                      YAxisLabel="outer θ [deg]"
-                                                      FixedYMin="90"
-                                                      FixedYMax="180"
-                                                      LightTheme="True"/>
-                        </Border>
-                        <TextBlock Text="{Binding TreatedAngleHeightScatterLegendText}" TextWrapping="Wrap" Foreground="#f0c978"/>
-                        <TextBlock Text="Each point is one guided perpendicular profile from the relevant condition. Larger dots are per-image means, and the dashed line follows the mean trend within that same condition bucket." TextWrapping="Wrap" Foreground="#d8c29a"/>
+                        <TextBlock Text="{Binding ConditionAngleComparisonLegendText}" TextWrapping="Wrap" Foreground="#f0c978"/>
+                        <TextBlock Text="Blue points/means show control and red points/means show treated. Both conditions are now overlaid on the same axis for direct comparison, while keeping the existing colour scheme unchanged." TextWrapping="Wrap" Foreground="#d8c29a"/>
                         <TextBlock Text="{Binding ConditionComparisonSummaryText}" TextWrapping="Wrap" Foreground="#d8c29a"/>
                     </StackPanel>
                 </ScrollViewer>
@@ -382,6 +379,8 @@
                             <Button Content="Play / Pause Simulation" Click="OnToggleSimulationClick"/>
                             <Button Content="Reset Simulation" Click="OnResetSimulationClick"/>
                             <Button Content="Download Growth Model CSV" Click="OnExportGrowthModelCsvClick"/>
+                            <Button Content="Download Plot Data CSV" Click="OnExportGrowthModelPlotCsvClick"/>
+                            <Button Content="Download Plot PNG" Click="OnExportGrowthModelPngClick"/>
                         </StackPanel>
                         <StackPanel Orientation="Horizontal" Spacing="10">
                             <TextBlock Text="Simulation Progress" VerticalAlignment="Center"/>
@@ -396,7 +395,8 @@
                         <TextBlock Text="{Binding SimulationReferenceSummaryText}" TextWrapping="Wrap" Foreground="#d8c29a"/>
                         <TextBlock Text="{Binding SimulationSurfaceMetaText}" TextWrapping="Wrap" Foreground="#bca37d"/>
                         <Border Background="#161008" BorderBrush="#352615" BorderThickness="1" CornerRadius="8" MinWidth="980" Height="380">
-                            <controls:LinePlotControl Series="{Binding SimulationSeries}"
+                            <controls:LinePlotControl x:Name="SimulationPlot"
+                                                      Series="{Binding SimulationSeries}"
                                                       Title="Polynomial Surface Evolution Cross-section"
                                                       XAxisLabel="{Binding SimulationXAxisLabel}"
                                                       YAxisLabel="{Binding SimulationYAxisLabel}"
@@ -412,13 +412,15 @@
 
             <TabItem Header="Equation Discovery">
                 <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
-                    <StackPanel Margin="10" Spacing="8" MinWidth="1040">
+                    <StackPanel x:Name="EquationDiscoveryExportPanel" Margin="10" Spacing="8" MinWidth="1040">
                         <TextBlock Text="Equation Discovery now starts from the actual guided image profiles, not the Growth Model simulation. Run guided extraction on sequenced images first; the app averages the perpendicular profiles per image, fills gaps over pseudo-time inside the observed interval, and ranks image-derived bimodal equation candidates." TextWrapping="Wrap" Foreground="#bca37d"/>
                         <StackPanel Orientation="Horizontal" Spacing="10">
                             <TextBlock Text="Analysis Cohort" VerticalAlignment="Center" Foreground="#d8c29a"/>
                             <ComboBox ItemsSource="{Binding AnalysisCohortOptions}" SelectedItem="{Binding SelectedAnalysisCohort, Mode=TwoWay}" Width="140"/>
                             <Button Content="Discover Growth Equations" Click="OnDiscoverGrowthEquationsClick"/>
                             <Button Content="Download Equation CSV" Click="OnExportEquationDiscoveryCsvClick"/>
+                            <Button Content="Download Plot Data CSV" Click="OnExportEquationPlotDataCsvClick"/>
+                            <Button Content="Download Plot PNG" Click="OnExportEquationPlotsPngClick"/>
                             <Button Content="Download Equation JSON" Click="OnExportEquationDiscoveryJsonClick"/>
                         </StackPanel>
                         <Border Background="#161008" BorderBrush="#352615" BorderThickness="1" CornerRadius="8" Padding="10">

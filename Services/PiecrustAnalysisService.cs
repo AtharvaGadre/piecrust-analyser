@@ -276,7 +276,7 @@ public sealed class PiecrustAnalysisService
             }
 
             var separation = ComputePeakSeparationWidthNm(peaks);
-            var width = ComputeMorphologyWidthNm(peaks, corrected, rawProfile.OffsetsNm, best);
+            var width = best is null ? 0 : ComputePeakFwhm(corrected, rawProfile.OffsetsNm, best.Index, best.Baseline);
             var figure5Angles = PeakToBaseAngleExtractor.Extract(corrected, rawProfile.OffsetsNm, figure5FlankMode, peakBaseThresholdFraction, maxBaseDistanceNm);
             var selectedFigure5 = figure5Angles.OrderByDescending(angle => angle.AngleDeg).FirstOrDefault();
             var leftAngle = figure5Angles.FirstOrDefault(angle => angle.Flank == "left")?.AngleDeg ?? selectedFigure5?.AngleDeg ?? 0;
@@ -1439,12 +1439,8 @@ public sealed class PiecrustAnalysisService
         return dominant.Length == 2 ? Math.Max(0, Math.Abs(dominant[1].OffsetNm - dominant[0].OffsetNm)) : 0;
     }
 
-    private static double ComputeMorphologyWidthNm(IReadOnlyList<PeakInfo> peaks, IReadOnlyList<double> values, IReadOnlyList<double> offsetsNm, PeakInfo? strongest)
-    {
-        var separationWidth = ComputePeakSeparationWidthNm(peaks);
-        if (separationWidth > 1e-9) return separationWidth;
-        return strongest is null ? 0 : ComputePeakFwhm(values, offsetsNm, strongest.Index, strongest.Baseline);
-    }
+    private static double ComputeMorphologyWidthNm(IReadOnlyList<PeakInfo> peaks, IReadOnlyList<double> values, IReadOnlyList<double> offsetsNm, PeakInfo? strongest) =>
+        strongest is null ? 0 : ComputePeakFwhm(values, offsetsNm, strongest.Index, strongest.Baseline);
 
     private static double EstimatePeakSeparation(PiecrustFileState file, IReadOnlyList<(PointD Point, double ArcNm)> sampled, double halfWidthPx)
     {

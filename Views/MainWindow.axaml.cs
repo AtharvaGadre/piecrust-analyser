@@ -2,6 +2,7 @@ using Avalonia.Controls;
 using Avalonia.Interactivity;
 using Avalonia.Input;
 using Avalonia.Input.Platform;
+using Avalonia.Media.Imaging;
 using Avalonia.Platform.Storage;
 using PiecrustAnalyser.CSharp.Controls;
 using PiecrustAnalyser.CSharp.Services;
@@ -113,11 +114,20 @@ public partial class MainWindow : Window
     private async void OnExportLineProfileCsvClick(object? sender, RoutedEventArgs e) =>
         await SaveCsvAsync(Vm.BuildCurrentLineProfileCsv(), "Save line profile CSV", "piecrust-line-profile.csv");
 
+    private async void OnExportLineProfilePlotCsvClick(object? sender, RoutedEventArgs e) =>
+        await SaveCsvAsync(Vm.BuildCurrentLineProfilePlotCsv(), "Save line profile plot data CSV", "piecrust-line-profile-plot-data.csv");
+
     private async void OnExportBoxPlotsCsvClick(object? sender, RoutedEventArgs e) =>
         await SaveCsvAsync(Vm.BuildStageBoxPlotsCsv(), "Save stage box plot CSV", "piecrust-stage-box-plots.csv");
 
+    private async void OnExportBoxPlotDataCsvClick(object? sender, RoutedEventArgs e) =>
+        await SaveCsvAsync(Vm.BuildStageBoxPlotDataCsv(), "Save box plot data CSV", "piecrust-box-plot-data.csv");
+
     private async void OnExportGrowthModelCsvClick(object? sender, RoutedEventArgs e) =>
         await SaveCsvAsync(Vm.BuildGrowthModelCsv(), "Save growth model CSV", "piecrust-growth-model.csv");
+
+    private async void OnExportGrowthModelPlotCsvClick(object? sender, RoutedEventArgs e) =>
+        await SaveCsvAsync(Vm.BuildGrowthModelPlotDataCsv(), "Save growth model plot data CSV", "piecrust-growth-model-plot-data.csv");
 
     private async void OnExportGrowthQuantCsvClick(object? sender, RoutedEventArgs e) =>
         await SaveCsvAsync(Vm.BuildGrowthQuantificationCsv(), "Save growth quantification CSV", "piecrust-growth-quant.csv");
@@ -125,11 +135,32 @@ public partial class MainWindow : Window
     private async void OnExportAngleVsHeightCsvClick(object? sender, RoutedEventArgs e) =>
         await SaveCsvAsync(Vm.BuildAngleVsHeightCsv(), "Save angle vs height CSV", "piecrust-angle-vs-height.csv");
 
+    private async void OnExportAnglePlotDataCsvClick(object? sender, RoutedEventArgs e) =>
+        await SaveCsvAsync(Vm.BuildAnglePlotDataCsv(), "Save growth angle plot data CSV", "piecrust-growth-angle-plot-data.csv");
+
     private async void OnExportEquationDiscoveryCsvClick(object? sender, RoutedEventArgs e) =>
         await SaveCsvAsync(Vm.BuildEquationDiscoveryCsv(), "Save equation discovery CSV", "piecrust-equation-discovery.csv");
 
+    private async void OnExportEquationPlotDataCsvClick(object? sender, RoutedEventArgs e) =>
+        await SaveCsvAsync(Vm.BuildEquationPlotDataCsv(), "Save equation plot data CSV", "piecrust-equation-plot-data.csv");
+
     private async void OnExportEquationDiscoveryJsonClick(object? sender, RoutedEventArgs e) =>
         await SaveJsonAsync(Vm.BuildEquationDiscoveryJson(), "Save equation discovery JSON", "piecrust-equation-discovery.json");
+
+    private async void OnExportLineProfilePngClick(object? sender, RoutedEventArgs e) =>
+        await SavePlotPngAsync(CurrentProfilePlot, "Save line profile plot PNG", "piecrust-line-profile-plot.png");
+
+    private async void OnExportBoxPlotsPngClick(object? sender, RoutedEventArgs e) =>
+        await SavePlotPngAsync(BoxPlotsExportPanel, "Save box plots PNG", "piecrust-box-plots.png");
+
+    private async void OnExportAnglePlotsPngClick(object? sender, RoutedEventArgs e) =>
+        await SavePlotPngAsync(GrowthAnglePlotsPanel, "Save growth angle plots PNG", "piecrust-growth-angle-plots.png");
+
+    private async void OnExportGrowthModelPngClick(object? sender, RoutedEventArgs e) =>
+        await SavePlotPngAsync(SimulationPlot, "Save growth model plot PNG", "piecrust-growth-model-plot.png");
+
+    private async void OnExportEquationPlotsPngClick(object? sender, RoutedEventArgs e) =>
+        await SavePlotPngAsync(EquationDiscoveryExportPanel, "Save equation discovery plots PNG", "piecrust-equation-discovery-plots.png");
 
     private void OnWindowDragOver(object? sender, DragEventArgs e)
     {
@@ -170,6 +201,50 @@ public partial class MainWindow : Window
     private async Task SaveJsonAsync(string json, string title, string suggestedFileName)
     {
         await SaveTextAsync(json, title, suggestedFileName, "JSON", "*.json");
+    }
+
+    private async Task SavePlotPngAsync(Control? control, string title, string suggestedFileName)
+    {
+        if (control is null || control.Bounds.Width < 2 || control.Bounds.Height < 2)
+        {
+            Vm.ReportRecoverableError("Nothing To Export", "This plot is not ready to save yet.");
+            return;
+        }
+
+        string? path;
+        if (OperatingSystem.IsMacOS())
+        {
+            path = await _nativeFileDialog.PickSavePathAsync(title, suggestedFileName);
+        }
+        else
+        {
+            var top = TopLevel.GetTopLevel(this);
+            if (top?.StorageProvider is null) return;
+            var file = await top.StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
+            {
+                Title = title,
+                SuggestedFileName = suggestedFileName,
+                FileTypeChoices =
+                [
+                    new FilePickerFileType("PNG")
+                    {
+                        Patterns = ["*.png"]
+                    }
+                ]
+            });
+            path = file?.TryGetLocalPath();
+        }
+
+        if (string.IsNullOrWhiteSpace(path)) return;
+
+        var scaling = TopLevel.GetTopLevel(control)?.RenderScaling ?? 1.0;
+        var pixelWidth = Math.Max(1, (int)Math.Ceiling(control.Bounds.Width * scaling));
+        var pixelHeight = Math.Max(1, (int)Math.Ceiling(control.Bounds.Height * scaling));
+        var bitmap = new RenderTargetBitmap(new Avalonia.PixelSize(pixelWidth, pixelHeight), new Avalonia.Vector(96 * scaling, 96 * scaling));
+        bitmap.Render(control);
+        await using var stream = File.Create(path);
+        bitmap.Save(stream);
+        Vm.StatusText = $"Saved PNG to {Path.GetFileName(path)}";
     }
 
     private async Task SaveTextAsync(string content, string title, string suggestedFileName, string label, string pattern)
